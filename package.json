@@ -1,0 +1,24 @@
+{
+  "name": "agentlens-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentLens - Platform & UI Foundation",
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "build": "npm run build:backend && npm run build:frontend",
+    "deploy:backend": "bash infrastructure/deploy.sh",
+    "test": "node --test tests/smoke.test.mjs"
+  },
+  "keywords": [
+    "agentlens",
+    "serverless",
+    "aws",
+    "react",
+    "vite",
+    "cloudformation"
+  ],
+  "license": "MIT"
+}

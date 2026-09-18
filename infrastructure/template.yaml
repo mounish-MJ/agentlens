@@ -1,0 +1,240 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AgentLens - AWS Backend Foundation (API Gateway, Lambda, DynamoDB, CloudWatch)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues:
+      - 'dev'
+      - 'staging'
+      - 'prod'
+    Description: 'Deployment environment identifier'
+  TableName:
+    Type: String
+    Default: 'agentlens-data'
+    Description: 'DynamoDB table name for AgentLens foundation'
+
+Resources:
+  # 1. DynamoDB Table Foundation (Single-table design: pk, sk)
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${TableName}-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Project
+          Value: AgentLens
+        - Key: Environment
+          Value: !Ref Environment
+
+  # 2. IAM Role for Lambda (Least Privilege)
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "agentlens-lambda-role-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AgentLensDynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !GetAtt DynamoDBTable.Arn
+                  - !Sub "${DynamoDBTable.Arn}/index/*"
+
+  # 3. CloudWatch Log Group for Lambda
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/agentlens-backend-${Environment}"
+      RetentionInDays: 14
+
+  # 4. AWS Lambda Backend Function
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - LambdaLogGroup
+      - LambdaExecutionRole
+    Properties:
+      FunctionName: !Sub "agentlens-backend-${Environment}"
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          NODE_ENV: !Ref Environment
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+      Code:
+        ZipFile: |
+          const handler = async (event, _context) => {
+            let path = '/';
+            let method = 'GET';
+            if ('rawPath' in event) {
+              path = event.rawPath || '/';
+              method = event.requestContext?.http?.method || 'GET';
+            } else {
+              path = event.path || '/';
+              method = event.httpMethod || 'GET';
+            }
+            console.log(`[AgentLens Lambda] Request received: ${method} ${path}`, JSON.stringify({
+              method,
+              path,
+              timestamp: new Date().toISOString(),
+              tableName: process.env.DYNAMODB_TABLE_NAME || 'undefined',
+            }));
+            if (path === '/health' || path === '/') {
+              console.log(`[AgentLens Lambda] Health check OK, responding 200`);
+              return {
+                statusCode: 200,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*',
+                },
+                body: JSON.stringify({
+                  status: 'ok',
+                  service: 'agentlens-backend',
+                  version: '0.1.0',
+                  timestamp: new Date().toISOString(),
+                  environment: process.env.NODE_ENV || 'production',
+                }),
+              };
+            }
+            console.warn(`[AgentLens Lambda] Route not found: ${method} ${path}`);
+            return {
+              statusCode: 404,
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+              },
+              body: JSON.stringify({
+                error: {
+                  code: 'NOT_FOUND',
+                  message: `Route ${method} ${path} not found.`,
+                },
+                timestamp: new Date().toISOString(),
+              }),
+            };
+          };
+          exports.handler = handler;
+      Tags:
+        - Key: Project
+          Value: AgentLens
+        - Key: Environment
+          Value: !Ref Environment
+
+  # 5. Amazon API Gateway HTTP API (v2)
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "agentlens-api-${Environment}"
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+          - X-Amz-Date
+          - X-Api-Key
+          - X-Amz-Security-Token
+        MaxAge: 300
+      Tags:
+        Project: AgentLens
+        Environment: !Ref Environment
+
+  # 6. API Gateway Lambda Integration (Proxy v2)
+  HttpApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt LambdaFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  # 7. Routes (GET /health & $default)
+  HttpApiHealthRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /health'
+      Target: !Sub "integrations/${HttpApiIntegration}"
+
+  HttpApiDefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: '$default'
+      Target: !Sub "integrations/${HttpApiIntegration}"
+
+  # 8. API Gateway Stage ($default with AutoDeploy)
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: '$default'
+      AutoDeploy: true
+
+  # 9. Lambda Permission for API Gateway invocation
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*"
+
+Outputs:
+  ApiEndpoint:
+    Description: 'HTTP API Gateway Base Endpoint'
+    Value: !GetAtt HttpApi.ApiEndpoint
+  HealthEndpoint:
+    Description: 'Direct URL to foundation health endpoint'
+    Value: !Sub "${HttpApi.ApiEndpoint}/health"
+  LambdaFunctionArn:
+    Description: 'ARN of AgentLens Backend Lambda function'
+    Value: !GetAtt LambdaFunction.Arn
+  DynamoDBTableName:
+    Description: 'Name of AgentLens foundation DynamoDB table'
+    Value: !Ref DynamoDBTable
+  DynamoDBTableArn:
+    Description: 'ARN of AgentLens foundation DynamoDB table'
+    Value: !GetAtt DynamoDBTable.Arn
