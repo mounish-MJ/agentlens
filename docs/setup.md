@@ -65,7 +65,22 @@ npm run deploy:backend
 AWS_REGION=ap-southeast-2 ENVIRONMENT=dev bash infrastructure/deploy.sh
 ```
 
-### 3. Verify Deployed Health Endpoint
+### 3. Verify Deployed Application API (Phase 3)
 ```bash
+# 1. Health Probe
 curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/health
+
+# 2. Create Run
+curl -i -X POST https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/runs \
+  -H "Content-Type: application/json" \
+  -d '{"agent_name": "demo-agent", "prompt": "Analyze security logs"}'
+
+# 3. Get Run by ID
+curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/runs/<run_id>
+
+# 4. List Incidents (returns empty array when none exist)
+curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents
+
+# 5. Get Incident by ID
+curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents/<incident_id>
 ```

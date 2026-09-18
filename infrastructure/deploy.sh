@@ -7,6 +7,7 @@ REGION="${AWS_REGION:-${CLI_REGION:-ap-southeast-2}}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 STACK_NAME="agentlens-backend-${ENVIRONMENT}-stack"
 TEMPLATE_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/template.yaml"
+BACKEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../backend" && pwd)"
 
 echo "=== AgentLens AWS Backend Foundation Deployment ==="
 echo "Target Region:      ${REGION}"
@@ -37,11 +38,27 @@ echo "Authenticated via AWS CLI:"
 echo "  Account: ${ACCOUNT_ID}"
 echo "  Arn:     ${ARN}"
 
-# 3. Build Backend TypeScript
+# 3. Build & Bundle Backend TypeScript
 echo "--> Compiling backend TypeScript..."
-npm --prefix "$(dirname "$0")/../backend" run build
+npm --prefix "${BACKEND_DIR}" run build
 
-# 4. Deploy CloudFormation Stack
+echo "--> Bundling Lambda package with esbuild..."
+mkdir -p "${BACKEND_DIR}/dist-bundle"
+npx -y esbuild "${BACKEND_DIR}/src/handler.ts" \
+  --bundle \
+  --platform=node \
+  --target=node20 \
+  --format=esm \
+  --outfile="${BACKEND_DIR}/dist-bundle/index.mjs" \
+  '--external:@aws-sdk/*'
+
+cp "${BACKEND_DIR}/dist-bundle/index.mjs" "${BACKEND_DIR}/dist-bundle/index.js"
+echo '{"type": "module"}' > "${BACKEND_DIR}/dist-bundle/package.json"
+
+(cd "${BACKEND_DIR}/dist-bundle" && zip -q -r "${BACKEND_DIR}/lambda.zip" index.js index.mjs package.json)
+echo "--> Lambda package created (${BACKEND_DIR}/lambda.zip)"
+
+# 4. Deploy CloudFormation Stack (Maintains existing resources)
 echo "--> Deploying CloudFormation stack: ${STACK_NAME}..."
 if ! aws cloudformation deploy \
   --template-file "${TEMPLATE_FILE}" \
@@ -56,9 +73,23 @@ if ! aws cloudformation deploy \
   exit 1
 fi
 
-echo "--> CloudFormation deployment succeeded!"
+echo "--> CloudFormation stack ready!"
 
-# 5. Extract Stack Outputs
+# 5. Update Lambda Function Code with real Application API
+LAMBDA_FUNCTION_NAME="agentlens-backend-${ENVIRONMENT}"
+echo "--> Deploying Application API code to Lambda (${LAMBDA_FUNCTION_NAME})..."
+aws lambda update-function-code \
+  --function-name "${LAMBDA_FUNCTION_NAME}" \
+  --zip-file "fileb://${BACKEND_DIR}/lambda.zip" \
+  --region "${REGION}" >/dev/null
+
+echo "--> Waiting for Lambda function update to settle..."
+aws lambda wait function-updated \
+  --function-name "${LAMBDA_FUNCTION_NAME}" \
+  --region "${REGION}"
+echo "--> Lambda code successfully updated!"
+
+# 6. Extract Stack Outputs
 echo "--> Retrieving stack outputs..."
 OUTPUTS=$(aws cloudformation describe-stacks \
   --stack-name "${STACK_NAME}" \
@@ -76,15 +107,47 @@ echo "Health Endpoint:     ${HEALTH_URL}"
 echo "DynamoDB Table:      ${TABLE_NAME}"
 echo "==================================================="
 
-# 6. Verify Deployed Health Endpoint
-if [ -n "${HEALTH_URL}" ]; then
-  echo "--> Testing deployed /health endpoint..."
-  curl -s -i "${HEALTH_URL}"
+# 7. Real Persistence Smoke Test
+if [ -n "${API_ENDPOINT}" ]; then
   echo ""
+  echo "=== REAL PERSISTENCE SMOKE TEST ==="
+  
+  echo "1. Testing GET /health..."
+  curl -s -i "${API_ENDPOINT}/health"
+  echo ""
+
+  echo "2. Testing POST /runs (Real DynamoDB Persistence)..."
+  CREATE_RES=$(curl -s -X POST "${API_ENDPOINT}/runs" \
+    -H "Content-Type: application/json" \
+    -d '{"agent_name": "smoke-test-agent", "prompt": "Verify DynamoDB Phase 3 persistence"}')
+  echo "POST /runs Response: ${CREATE_RES}"
+
+  RUN_ID=$(echo "${CREATE_RES}" | grep -o '"run_id":"[^"]*' | cut -d'"' -f4 || true)
+
+  if [ -n "${RUN_ID}" ]; then
+    echo "Created Run ID: ${RUN_ID}"
+    echo "3. Testing GET /runs/${RUN_ID} (Confirming DynamoDB persistence)..."
+    GET_RUN_RES=$(curl -s "${API_ENDPOINT}/runs/${RUN_ID}")
+    echo "GET /runs/${RUN_ID} Response: ${GET_RUN_RES}"
+
+    echo "4. Cleaning up smoke test run item from DynamoDB..."
+    aws dynamodb delete-item \
+      --table-name "${TABLE_NAME}" \
+      --key '{"pk": {"S": "RUN#'"${RUN_ID}"'"}, "sk": {"S": "METADATA"}}' \
+      --region "${REGION}" >/dev/null || true
+    echo "Cleanup complete."
+  else
+    echo "[WARNING] Could not parse run_id from POST /runs response"
+  fi
+
+  echo "5. Testing GET /incidents (Verifying real data / empty collection, no fake data)..."
+  INCIDENTS_RES=$(curl -s "${API_ENDPOINT}/incidents")
+  echo "GET /incidents Response: ${INCIDENTS_RES}"
 fi
 
-# 7. Verify DynamoDB Table Status
+# 8. Verify DynamoDB Table Status
 if [ -n "${TABLE_NAME}" ]; then
+  echo ""
   echo "--> Verifying DynamoDB table status..."
   aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" --query 'Table.TableStatus' --output text || true
 fi

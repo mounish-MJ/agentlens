@@ -18,14 +18,43 @@ AgentLens Platform/UI is structured as a modern serverless web application desig
 [ Amazon DynamoDB (agentlens-data-dev) ]
 ```
 
-### Components Implemented (Phase 2)
-1. **API Gateway (HTTP API v2)**: Routes `GET /health` and `$default` to the Lambda backend with CORS enabled for all origins.
-2. **Lambda Handler**: TypeScript handler running on `nodejs20.x`, with decoupled local development wrapper (`server.ts`) and CloudWatch logging.
-3. **DynamoDB**: Single-table design (`pk`, `sk`) with On-Demand (pay-per-request) billing mode and point-in-time recovery.
-4. **IAM Role**: Scoped strictly to CloudWatch log creation/writing and DynamoDB operations on the `agentlens-data-*` table.
-5. **CloudWatch Logs**: Dedicated log group with 14-day retention.
+---
+
+## Phase 3: Application API & Persistence Architecture
+
+### 1. Canonical Domain Entities
+- **Run**: Execution trace lifecycle of an AI agent, prompts, status, and execution metadata.
+- **Incident**: Detected anomalies, execution failures, tool loops, or errors.
+- **RegressionTest**: Test suites derived from workflows/incidents for quality regression.
+- **Evaluation**: Scorecard evaluation results assessing agent metrics.
+- **ReplayRecord**: Environment state snapshots for deterministic trace replay.
+
+### 2. DynamoDB Single-Table Key Strategy
+- **Table**: `agentlens-data-{env}`
+- **Partition Key (`pk`)**: String
+- **Sort Key (`sk`)**: String
+- **Capacity**: `PAY_PER_REQUEST` (On-Demand)
+
+#### Key Mappings:
+| Entity | Partition Key (`pk`) | Sort Key (`sk`) | Access Pattern |
+|---|---|---|---|
+| `Run` | `RUN#<run_id>` | `METADATA` | `GetItem(pk=RUN#<id>, sk=METADATA)` (O(1)) |
+| `Incident` | `INCIDENT#<incident_id>` | `METADATA` | `GetItem(pk=INCIDENT#<id>, sk=METADATA)` (O(1)) |
+| `Incidents (Timeline)` | `INCIDENTS` | `INCIDENT#<created_at>#<id>` | `Query(pk=INCIDENTS, ScanIndexForward=false)` (O(k)) |
+| `RegressionTest` | `TEST#<test_id>` | `METADATA` | `GetItem(pk=TEST#<id>, sk=METADATA)` (O(1)) |
+| `Evaluation` | `EVAL#<evaluation_id>` | `METADATA` | `GetItem(pk=EVAL#<id>, sk=METADATA)` (O(1)) |
+| `ReplayRecord` | `REPLAY#<replay_id>` | `METADATA` | `GetItem(pk=REPLAY#<id>, sk=METADATA)` (O(1)) |
+
+### 3. Implemented API Endpoints
+- `GET /health`: Health probe returning status, region, and table name.
+- `POST /runs`: Validate and create agent run with generated `run_id`.
+- `GET /runs/{run_id}`: Point lookup of run by ID.
+- `GET /incidents`: Query chronological incidents without table scan (returns empty collection if none).
+- `GET /incidents/{incident_id}`: Point lookup of incident by ID.
+
+---
 
 ### Key Principles
-1. **Separation of Concerns**: Frontend UI components, backend Lambda handlers, and shared contracts remain decoupled.
+1. **Separation of Concerns**: Frontend UI components, backend Lambda handlers, repository layer, and shared contracts remain decoupled.
 2. **Environment Portability**: Local execution via lightweight development server (`http://localhost:4000`); cloud execution via AWS Lambda without rewriting core handler logic.
 3. **Strict Zero-Secret Policy**: No AWS keys, session tokens, or private secrets in source control.

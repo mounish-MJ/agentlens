@@ -18,7 +18,7 @@ agentlens/
 
 ---
 
-## AWS Architecture Foundation (Phase 2)
+## AWS Architecture Foundation (Phase 2 & Phase 3)
 
 ```
 [ Future React Frontend / Amplify / Localhost ]
@@ -38,10 +38,17 @@ agentlens/
          (agentlens-data-dev)
 ```
 
-- **API Gateway (HTTP API v2)**: Exposes `GET /health` with full CORS support (`*`) and routes requests to the Lambda function.
-- **AWS Lambda**: Decoupled entry point (`backend/src/handler.ts`) compatible with API Gateway v1/v2, logging directly to CloudWatch.
-- **Amazon DynamoDB**: Foundation single-table schema with `pk` (String) and `sk` (String) keys, on-demand capacity, and point-in-time recovery.
+- **API Gateway (HTTP API v2)**: Exposes application endpoints with full CORS support (`*`) and routes requests to the Lambda function.
+- **AWS Lambda**: Decoupled entry point (`backend/src/handler.ts`) executing Phase 3 API handlers with CloudWatch logging.
+- **Amazon DynamoDB**: Single-table persistence (`agentlens-data-dev`) implementing deterministic `pk`/`sk` patterns for all canonical entities without scans or secondary indexes.
 - **IAM**: Least-privilege role restricted strictly to CloudWatch log creation and DynamoDB operations on the application table.
+
+### Implemented Endpoints (Phase 3)
+- `GET /health` — Runtime health check probe
+- `POST /runs` — Validate and create agent run in DynamoDB
+- `GET /runs/{run_id}` — Get Run by ID
+- `GET /incidents` — List chronological incidents (empty collection when none exist)
+- `GET /incidents/{incident_id}` — Get Incident by ID
 
 ---
 

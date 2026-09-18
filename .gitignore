@@ -110,6 +110,8 @@ Thumbs.db
 
 # Build outputs
 dist/
+dist-bundle/
 build/
 .aws-sam/
 out/
+*.zip

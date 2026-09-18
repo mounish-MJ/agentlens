@@ -1,0 +1,309 @@
+import crypto from 'node:crypto';
+import type {
+  ApiResponse,
+  Run,
+  CreateRunRequest,
+  Incident,
+  HealthCheckResponse,
+} from '../types/contracts.js';
+import type { IAgentLensRepository } from '../repository/agentlens-repository.js';
+
+export interface ControllerResponse<T = unknown> {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: ApiResponse<T>;
+}
+
+const COMMON_HEADERS: Record<string, string> = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, DELETE',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token',
+};
+
+export class ApiController {
+  constructor(private readonly repo: IAgentLensRepository) {}
+
+  // ==========================================
+  // GET /health
+  // ==========================================
+  async getHealth(): Promise<ControllerResponse<HealthCheckResponse>> {
+    const healthData: HealthCheckResponse = {
+      status: 'ok',
+      service: 'agentlens-backend',
+      version: '0.1.0',
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      region: process.env.AWS_REGION || 'ap-southeast-2',
+      table: process.env.DYNAMODB_TABLE_NAME || 'agentlens-data-dev',
+    };
+
+    return {
+      statusCode: 200,
+      headers: COMMON_HEADERS,
+      body: {
+        success: true,
+        data: healthData,
+        timestamp: new Date().toISOString(),
+      },
+    };
+  }
+
+  // ==========================================
+  // POST /runs
+  // ==========================================
+  async createRun(rawBody: unknown): Promise<ControllerResponse<Run>> {
+    const now = new Date().toISOString();
+
+    if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'BAD_REQUEST',
+            message: 'Request body must be a valid JSON object.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    const { agent_name, prompt, metadata } = rawBody as Partial<CreateRunRequest>;
+
+    if (!agent_name || typeof agent_name !== 'string' || agent_name.trim().length === 0) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Field "agent_name" is required and must be a non-empty string.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Field "prompt" is required and must be a non-empty string.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    const run_id = `run_${crypto.randomUUID().replace(/-/g, '')}`;
+
+    const newRun: Run = {
+      run_id,
+      agent_name: agent_name.trim(),
+      status: 'pending',
+      prompt: prompt.trim(),
+      metadata: metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : undefined,
+      created_at: now,
+      updated_at: now,
+    };
+
+    try {
+      const persistedRun = await this.repo.createRun(newRun);
+      return {
+        statusCode: 201,
+        headers: COMMON_HEADERS,
+        body: {
+          success: true,
+          data: persistedRun,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    } catch (err: unknown) {
+      console.error('[ApiController] Error creating Run in DynamoDB:', err);
+      return {
+        statusCode: 500,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to persist Run in data store.',
+          },
+          timestamp: new Date().toISOString(),
+        },
+      };
+    }
+  }
+
+  // ==========================================
+  // GET /runs/{run_id}
+  // ==========================================
+  async getRun(run_id?: string): Promise<ControllerResponse<Run>> {
+    const now = new Date().toISOString();
+
+    if (!run_id || typeof run_id !== 'string' || run_id.trim().length === 0) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Parameter "run_id" is required.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    try {
+      const run = await this.repo.getRun(run_id.trim());
+
+      if (!run) {
+        return {
+          statusCode: 404,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'NOT_FOUND',
+              message: `Run with ID "${run_id}" not found.`,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: COMMON_HEADERS,
+        body: {
+          success: true,
+          data: run,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    } catch (err: unknown) {
+      console.error(`[ApiController] Error retrieving Run ${run_id}:`, err);
+      return {
+        statusCode: 500,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to retrieve Run from data store.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+  }
+
+  // ==========================================
+  // GET /incidents
+  // ==========================================
+  async listIncidents(): Promise<ControllerResponse<Incident[]>> {
+    const now = new Date().toISOString();
+
+    try {
+      const incidents = await this.repo.listIncidents();
+
+      return {
+        statusCode: 200,
+        headers: COMMON_HEADERS,
+        body: {
+          success: true,
+          data: incidents, // returns empty array if none, never fake data!
+          timestamp: now,
+        },
+      };
+    } catch (err: unknown) {
+      console.error('[ApiController] Error listing Incidents:', err);
+      return {
+        statusCode: 500,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to list Incidents from data store.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+  }
+
+  // ==========================================
+  // GET /incidents/{incident_id}
+  // ==========================================
+  async getIncident(incident_id?: string): Promise<ControllerResponse<Incident>> {
+    const now = new Date().toISOString();
+
+    if (!incident_id || typeof incident_id !== 'string' || incident_id.trim().length === 0) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Parameter "incident_id" is required.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    try {
+      const incident = await this.repo.getIncident(incident_id.trim());
+
+      if (!incident) {
+        return {
+          statusCode: 404,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'NOT_FOUND',
+              message: `Incident with ID "${incident_id}" not found.`,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: COMMON_HEADERS,
+        body: {
+          success: true,
+          data: incident,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    } catch (err: unknown) {
+      console.error(`[ApiController] Error retrieving Incident ${incident_id}:`, err);
+      return {
+        statusCode: 500,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to retrieve Incident from data store.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+  }
+}
