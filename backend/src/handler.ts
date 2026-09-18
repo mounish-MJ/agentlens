@@ -104,9 +104,33 @@ export function createHandler(customRepo?: IAgentLensRepository) {
       };
     }
 
-    // 3. GET /runs/{run_id}
-    if (method === 'GET' && normalizedPath.startsWith('/runs/')) {
-      const run_id = normalizedPath.slice('/runs/'.length);
+    // 3. POST & GET /runs/{run_id}/telemetry (Phase 4 Telemetry Ingestion & Retrieval)
+    const telemetryMatch = normalizedPath.match(/^\/runs\/([^/]+)\/telemetry$/);
+    if (telemetryMatch) {
+      const run_id = telemetryMatch[1];
+      if (method === 'POST') {
+        const result = await controller.ingestTelemetry(run_id, parsedBody);
+        return {
+          statusCode: result.statusCode,
+          headers: result.headers,
+          body: JSON.stringify(result.body),
+        };
+      }
+      if (method === 'GET') {
+        const limit = 'queryStringParameters' in event ? event.queryStringParameters?.limit : undefined;
+        const result = await controller.getRunTelemetry(run_id, limit);
+        return {
+          statusCode: result.statusCode,
+          headers: result.headers,
+          body: JSON.stringify(result.body),
+        };
+      }
+    }
+
+    // 4. GET /runs/{run_id}
+    const runMatch = normalizedPath.match(/^\/runs\/([^/]+)$/);
+    if (method === 'GET' && runMatch) {
+      const run_id = runMatch[1];
       const result = await controller.getRun(run_id);
       return {
         statusCode: result.statusCode,

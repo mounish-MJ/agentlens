@@ -110,7 +110,7 @@ echo "==================================================="
 # 7. Real Persistence Smoke Test
 if [ -n "${API_ENDPOINT}" ]; then
   echo ""
-  echo "=== REAL PERSISTENCE SMOKE TEST ==="
+  echo "=== REAL PERSISTENCE SMOKE TEST (PHASE 4) ==="
   
   echo "1. Testing GET /health..."
   curl -s -i "${API_ENDPOINT}/health"
@@ -119,28 +119,57 @@ if [ -n "${API_ENDPOINT}" ]; then
   echo "2. Testing POST /runs (Real DynamoDB Persistence)..."
   CREATE_RES=$(curl -s -X POST "${API_ENDPOINT}/runs" \
     -H "Content-Type: application/json" \
-    -d '{"agent_name": "smoke-test-agent", "prompt": "Verify DynamoDB Phase 3 persistence"}')
+    -d '{"agent_name": "smoke-test-agent", "prompt": "Verify DynamoDB Phase 4 persistence"}')
   echo "POST /runs Response: ${CREATE_RES}"
 
   RUN_ID=$(echo "${CREATE_RES}" | grep -o '"run_id":"[^"]*' | cut -d'"' -f4 || true)
 
   if [ -n "${RUN_ID}" ]; then
     echo "Created Run ID: ${RUN_ID}"
-    echo "3. Testing GET /runs/${RUN_ID} (Confirming DynamoDB persistence)..."
+    
+    echo "3. Testing POST /runs/${RUN_ID}/telemetry (Phase 4 Telemetry Ingestion)..."
+    INGEST_RES=$(curl -s -X POST "${API_ENDPOINT}/runs/${RUN_ID}/telemetry" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "status": "completed",
+        "result": "Phase 4 live verification successful",
+        "metrics": { "prompt_tokens": 150, "completion_tokens": 50, "total_tokens": 200, "duration_ms": 320, "tool_calls_count": 1 },
+        "events": [
+          { "type": "tool_call", "name": "system_probe", "data": { "probe": "live_test" }, "duration_ms": 25, "status": "success" },
+          { "type": "model_invocation", "name": "mock_llm", "data": { "tokens": 200 }, "duration_ms": 280, "status": "success" }
+        ]
+      }')
+    echo "POST /runs/${RUN_ID}/telemetry Response: ${INGEST_RES}"
+
+    echo "4. Testing GET /runs/${RUN_ID}/telemetry (Confirming DynamoDB Event Collection)..."
+    GET_TELEM_RES=$(curl -s "${API_ENDPOINT}/runs/${RUN_ID}/telemetry")
+    echo "GET /runs/${RUN_ID}/telemetry Response: ${GET_TELEM_RES}"
+
+    echo "5. Testing GET /runs/${RUN_ID} (Confirming Run update in DynamoDB)..."
     GET_RUN_RES=$(curl -s "${API_ENDPOINT}/runs/${RUN_ID}")
     echo "GET /runs/${RUN_ID} Response: ${GET_RUN_RES}"
 
-    echo "4. Cleaning up smoke test run item from DynamoDB..."
-    aws dynamodb delete-item \
+    echo "6. Cleaning up smoke test run and telemetry items from DynamoDB..."
+    # Query all items under the Run partition to clean up
+    ITEMS_JSON=$(aws dynamodb query \
       --table-name "${TABLE_NAME}" \
-      --key '{"pk": {"S": "RUN#'"${RUN_ID}"'"}, "sk": {"S": "METADATA"}}' \
-      --region "${REGION}" >/dev/null || true
+      --key-condition-expression "pk = :pk" \
+      --expression-attribute-values '{":pk":{"S":"RUN#'"${RUN_ID}"'"}}' \
+      --region "${REGION}" \
+      --output json 2>/dev/null || true)
+    
+    for SK in $(echo "${ITEMS_JSON}" | grep -o '"sk": {"S": "[^"]*' | cut -d'"' -f5); do
+      aws dynamodb delete-item \
+        --table-name "${TABLE_NAME}" \
+        --key '{"pk": {"S": "RUN#'"${RUN_ID}"'"}, "sk": {"S": "'"${SK}"'"}}' \
+        --region "${REGION}" >/dev/null || true
+    done
     echo "Cleanup complete."
   else
     echo "[WARNING] Could not parse run_id from POST /runs response"
   fi
 
-  echo "5. Testing GET /incidents (Verifying real data / empty collection, no fake data)..."
+  echo "7. Testing GET /incidents (Verifying real data / empty collection, no fake data)..."
   INCIDENTS_RES=$(curl -s "${API_ENDPOINT}/incidents")
   echo "GET /incidents Response: ${INCIDENTS_RES}"
 fi

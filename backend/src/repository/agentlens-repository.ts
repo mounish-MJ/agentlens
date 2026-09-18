@@ -7,15 +7,31 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import type {
   Run,
+  RunStatus,
   Incident,
   RegressionTest,
   Evaluation,
   ReplayRecord,
+  TelemetryEvent,
+  ExecutionMetrics,
 } from '../types/contracts.js';
 
 export interface IAgentLensRepository {
   createRun(run: Run): Promise<Run>;
   getRun(run_id: string): Promise<Run | null>;
+  recordTelemetryEvents(run_id: string, events: TelemetryEvent[]): Promise<TelemetryEvent[]>;
+  getTelemetryEvents(run_id: string, limit?: number): Promise<TelemetryEvent[]>;
+  updateRunTelemetry(
+    run_id: string,
+    updates: {
+      status?: RunStatus;
+      result?: string;
+      error?: string;
+      metrics?: Partial<ExecutionMetrics>;
+      new_events_count?: number;
+      updated_at: string;
+    }
+  ): Promise<Run | null>;
   createIncident(incident: Incident): Promise<Incident>;
   getIncident(incident_id: string): Promise<Incident | null>;
   listIncidents(limit?: number): Promise<Incident[]>;
@@ -89,6 +105,103 @@ export class AgentLensRepository implements IAgentLensRepository {
     };
 
     return runData as Run;
+  }
+
+  // ===================================================
+  // Telemetry Ingestion & Persistence Primitives
+  // ===================================================
+
+  async recordTelemetryEvents(run_id: string, events: TelemetryEvent[]): Promise<TelemetryEvent[]> {
+    if (events.length === 0) {
+      return [];
+    }
+
+    // Persist each event under the Run partition: pk = RUN#<run_id>, sk = EVENT#<timestamp>#<event_id>
+    await Promise.all(
+      events.map(async (event) => {
+        const item = {
+          pk: `RUN#${run_id}`,
+          sk: `EVENT#${event.timestamp}#${event.event_id}`,
+          entity_type: 'TELEMETRY_EVENT',
+          ...event,
+        };
+
+        await this.docClient.send(
+          new PutCommand({
+            TableName: this.tableName,
+            Item: item,
+          })
+        );
+      })
+    );
+
+    return events;
+  }
+
+  async getTelemetryEvents(run_id: string, limit = 100): Promise<TelemetryEvent[]> {
+    const response = await this.docClient.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :sk_prefix)',
+        ExpressionAttributeValues: {
+          ':pk': `RUN#${run_id}`,
+          ':sk_prefix': 'EVENT#',
+        },
+        ScanIndexForward: true, // Chronological: earliest to latest
+        Limit: limit,
+      })
+    );
+
+    if (!response.Items || response.Items.length === 0) {
+      return [];
+    }
+
+    return response.Items.map((item) => {
+      const { pk, sk, entity_type, ...eventData } = item as TelemetryEvent & {
+        pk: string;
+        sk: string;
+        entity_type: string;
+      };
+      return eventData as TelemetryEvent;
+    });
+  }
+
+  async updateRunTelemetry(
+    run_id: string,
+    updates: {
+      status?: RunStatus;
+      result?: string;
+      error?: string;
+      metrics?: Partial<ExecutionMetrics>;
+      new_events_count?: number;
+      updated_at: string;
+    }
+  ): Promise<Run | null> {
+    const existingRun = await this.getRun(run_id);
+    if (!existingRun) {
+      return null;
+    }
+
+    const mergedMetrics: ExecutionMetrics | undefined =
+      updates.metrics || existingRun.metrics
+        ? {
+            ...(existingRun.metrics || {}),
+            ...(updates.metrics || {}),
+          }
+        : undefined;
+
+    const updatedRun: Run = {
+      ...existingRun,
+      status: updates.status || existingRun.status,
+      result: updates.result !== undefined ? updates.result : existingRun.result,
+      error: updates.error !== undefined ? updates.error : existingRun.error,
+      metrics: mergedMetrics,
+      events_count: (existingRun.events_count || 0) + (updates.new_events_count || 0),
+      updated_at: updates.updated_at,
+    };
+
+    await this.createRun(updatedRun);
+    return updatedRun;
   }
 
   // ===================================================

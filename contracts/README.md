@@ -4,11 +4,12 @@ This directory contains the canonical type contracts, API interface definitions,
 
 ---
 
-## Canonical Domain Entities (Phase 3)
+## Canonical Domain Entities (Phase 3 & Phase 4)
 
 | Entity | Primary ID | Purpose |
 |---|---|---|
-| **Run** | `run_id` (`run_<uuid>`) | Agent execution lifecycle, input prompt, status, and metadata |
+| **Run** | `run_id` (`run_<uuid>`) | Agent execution lifecycle, input prompt, status, execution metrics, and metadata |
+| **TelemetryEvent** | `event_id` (`evt_<uuid>`) | Individual execution events: tool calls, model invocations, state changes, logs, metrics |
 | **Incident** | `incident_id` (`inc_<uuid>`) | Detected execution failure, tool loop, token anomaly, or error |
 | **RegressionTest** | `test_id` (`test_<uuid>`) | Test case derived from workflows/incidents for quality regression |
 | **Evaluation** | `evaluation_id` (`eval_<uuid>`) | Scorecard / evaluation results measuring agent quality metrics |
@@ -24,7 +25,8 @@ Target Table: `agentlens-data-{env}` (On-Demand billing, partition key `pk`, sor
 
 | Entity / Pattern | Partition Key (`pk`) | Sort Key (`sk`) | Description | Query Access Pattern |
 |---|---|---|---|---|
-| **Run (Primary)** | `RUN#<run_id>` | `METADATA` | Full record of agent execution run | `GetItem(pk=RUN#<id>, sk=METADATA)` (O(1)) |
+| **Run (Metadata)** | `RUN#<run_id>` | `METADATA` | Full record of agent execution run | `GetItem(pk=RUN#<id>, sk=METADATA)` (O(1)) |
+| **Run Telemetry Events** | `RUN#<run_id>` | `EVENT#<timestamp>#<event_id>` | Chronological telemetry events collection | `Query(pk=RUN#<id>, begins_with(sk, 'EVENT#'))` (O(k)) |
 | **Incident (Primary)** | `INCIDENT#<incident_id>` | `METADATA` | Direct lookup by incident identifier | `GetItem(pk=INCIDENT#<id>, sk=METADATA)` (O(1)) |
 | **Incidents (Timeline)** | `INCIDENTS` | `INCIDENT#<created_at>#<id>` | Global chronological incident timeline | `Query(pk=INCIDENTS, ScanIndexForward=false)` (O(k)) |
 | **RegressionTest** | `TEST#<test_id>` | `METADATA` | Regression test definition | `GetItem(pk=TEST#<id>, sk=METADATA)` (O(1)) |
@@ -32,17 +34,20 @@ Target Table: `agentlens-data-{env}` (On-Demand billing, partition key `pk`, sor
 | **ReplayRecord** | `REPLAY#<replay_id>` | `METADATA` | Recorded environment state snapshot | `GetItem(pk=REPLAY#<id>, sk=METADATA)` (O(1)) |
 
 ### Design Rationale
-1. **Zero Table Scans**: All lookups are direct `GetItem` point-queries (`O(1)`). Global incident listings query the fixed `INCIDENTS` partition key (`O(k)` newest first).
-2. **Zero Secondary Indexes (GSI)**: Avoids extra provisioned capacity or GSI replication lag during the hackathon, keeping billing strictly on-demand.
-3. **Partition Isolation**: Prefixing partition keys (`RUN#`, `INCIDENT#`, `TEST#`, `EVAL#`, `REPLAY#`) prevents key collisions across canonical entity types.
-4. **Extensibility**: Future phases can easily add item collections (e.g. `pk=RUN#<run_id>, sk=INCIDENT#<incident_id>` or `pk=RUN#<run_id>, sk=EVAL#<evaluation_id>`) without migrating table schemas.
+1. **Zero Table Scans**: All lookups are direct `GetItem` point-queries (`O(1)`). Chronological telemetry items query the Run's item collection using `begins_with(sk, 'EVENT#')` in `O(k)`.
+2. **Zero Secondary Indexes (GSI)**: Avoids provisioned capacity or GSI replication delay during the hackathon, keeping billing strictly on-demand.
+3. **Partition Isolation & Item Collection**: Co-locating telemetry events under `RUN#<run_id>` partition alongside `sk=METADATA` organizes all run data in a single partition for clean query patterns and cascading cleanup.
+4. **Unique Event ID Strategy**: Telemetry events use generated unique IDs (`evt_<randomUUID>`) to guarantee collision-free writes across concurrent worker/agent invocations without depending on microsecond timestamps.
+5. **Canonical Event Validation**: Strictly validates incoming event types (`tool_call`, `model_invocation`, `state_change`, `log`, `metric`). Rejects arbitrary or malformed types with HTTP 400 (`VALIDATION_ERROR`).
 
 ---
 
-## Implemented API Endpoints (Phase 3)
+## API Endpoints (Phase 3 & Phase 4)
 
 - `GET /health` — Foundation health probe returning runtime status, region, and table name.
 - `POST /runs` — Validates input, creates a new Run, persists to DynamoDB, and returns HTTP 201.
-- `GET /runs/{run_id}` — Retrieves Run by ID from DynamoDB (returns HTTP 404 if not found).
+- `GET /runs/{run_id}` — Retrieves Run by ID from DynamoDB with status, metrics, and `events_count`.
+- `POST /runs/{run_id}/telemetry` — Ingests telemetry events, updates Run status, result, error, and metrics in DynamoDB.
+- `GET /runs/{run_id}/telemetry` — Retrieves chronological telemetry events for a Run (oldest to newest).
 - `GET /incidents` — Lists chronological incidents from DynamoDB (returns empty array `[]` when none exist; never fake data).
 - `GET /incidents/{incident_id}` — Retrieves Incident by ID from DynamoDB (returns HTTP 404 if missing).

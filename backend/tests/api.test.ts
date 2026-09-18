@@ -5,10 +5,13 @@ import { createHandler } from '../src/handler.js';
 import { ApiController } from '../src/controllers/api-controller.js';
 import type {
   Run,
+  RunStatus,
   Incident,
   RegressionTest,
   Evaluation,
   ReplayRecord,
+  TelemetryEvent,
+  ExecutionMetrics,
 } from '../../contracts/types.js';
 
 /**
@@ -16,6 +19,7 @@ import type {
  */
 class MockAgentLensRepository implements IAgentLensRepository {
   public runs = new Map<string, Run>();
+  public telemetryEvents = new Map<string, TelemetryEvent[]>();
   public incidents = new Map<string, Incident>();
   public regressionTests = new Map<string, RegressionTest>();
   public evaluations = new Map<string, Evaluation>();
@@ -28,6 +32,49 @@ class MockAgentLensRepository implements IAgentLensRepository {
 
   async getRun(run_id: string): Promise<Run | null> {
     return this.runs.get(run_id) || null;
+  }
+
+  async recordTelemetryEvents(run_id: string, events: TelemetryEvent[]): Promise<TelemetryEvent[]> {
+    const existing = this.telemetryEvents.get(run_id) || [];
+    const updated = [...existing, ...events];
+    this.telemetryEvents.set(run_id, updated);
+    return events;
+  }
+
+  async getTelemetryEvents(run_id: string, limit = 100): Promise<TelemetryEvent[]> {
+    const events = this.telemetryEvents.get(run_id) || [];
+    return events.slice(0, limit);
+  }
+
+  async updateRunTelemetry(
+    run_id: string,
+    updates: {
+      status?: RunStatus;
+      result?: string;
+      error?: string;
+      metrics?: Partial<ExecutionMetrics>;
+      new_events_count?: number;
+      updated_at: string;
+    }
+  ): Promise<Run | null> {
+    const existing = this.runs.get(run_id);
+    if (!existing) return null;
+
+    const mergedMetrics: ExecutionMetrics | undefined = updates.metrics || existing.metrics
+      ? { ...(existing.metrics || {}), ...(updates.metrics || {}) }
+      : undefined;
+
+    const updated: Run = {
+      ...existing,
+      status: updates.status || existing.status,
+      result: updates.result !== undefined ? updates.result : existing.result,
+      error: updates.error !== undefined ? updates.error : existing.error,
+      metrics: mergedMetrics,
+      events_count: (existing.events_count || 0) + (updates.new_events_count || 0),
+      updated_at: updates.updated_at,
+    };
+    this.runs.set(run_id, updated);
+    return updated;
   }
 
   async createIncident(incident: Incident): Promise<Incident> {
@@ -290,4 +337,167 @@ test('Canonical Entity Persistence Primitives in Mock Repository', async () => {
   await mockRepo.createReplayRecord(replayObj);
   const fetchedReplay = await mockRepo.getReplayRecord('replay_1');
   assert.equal(fetchedReplay?.run_id, 'run_1');
+});
+
+test('API Controller: POST /runs/{run_id}/telemetry ingests events, updates metrics and status', async () => {
+  const mockRepo = new MockAgentLensRepository();
+  const controller = new ApiController(mockRepo);
+
+  // 1. Create a run first
+  const runRes = await controller.createRun({
+    agent_name: 'test-agent',
+    prompt: 'Execute search task',
+  });
+  assert.equal(runRes.statusCode, 201);
+  const runId = runRes.body.data!.run_id;
+
+  // 2. Ingest telemetry
+  const telemetryPayload = {
+    status: 'completed',
+    result: 'Task completed successfully',
+    metrics: {
+      prompt_tokens: 250,
+      completion_tokens: 100,
+      total_tokens: 350,
+      duration_ms: 1200,
+      tool_calls_count: 2,
+    },
+    events: [
+      {
+        type: 'tool_call',
+        name: 'database_lookup',
+        data: { query: 'SELECT * FROM items' },
+        duration_ms: 45,
+        status: 'success',
+      },
+      {
+        type: 'model_invocation',
+        name: 'anthropic.claude-3-haiku',
+        data: { tokens: 350 },
+        duration_ms: 800,
+        status: 'success',
+      },
+    ],
+  };
+
+  const ingestRes = await controller.ingestTelemetry(runId, telemetryPayload);
+  assert.equal(ingestRes.statusCode, 200);
+  assert.equal(ingestRes.body.success, true);
+  assert.equal(ingestRes.body.data?.run_id, runId);
+  assert.equal(ingestRes.body.data?.ingested_events_count, 2);
+  assert.equal(ingestRes.body.data?.total_events_count, 2);
+  assert.equal(ingestRes.body.data?.status, 'completed');
+
+  // 3. Verify Run itself was updated in repository
+  const fetchedRun = await mockRepo.getRun(runId);
+  assert.equal(fetchedRun?.status, 'completed');
+  assert.equal(fetchedRun?.result, 'Task completed successfully');
+  assert.equal(fetchedRun?.events_count, 2);
+  assert.equal(fetchedRun?.metrics?.total_tokens, 350);
+  assert.equal(fetchedRun?.metrics?.duration_ms, 1200);
+
+  // 4. Verify GET /runs/{run_id}/telemetry returns events
+  const getTelemetryRes = await controller.getRunTelemetry(runId);
+  assert.equal(getTelemetryRes.statusCode, 200);
+  assert.equal(getTelemetryRes.body.success, true);
+  assert.equal(getTelemetryRes.body.data?.length, 2);
+  assert.equal(getTelemetryRes.body.data![0].name, 'database_lookup');
+  assert.equal(getTelemetryRes.body.data![0].type, 'tool_call');
+  assert.ok(getTelemetryRes.body.data![0].event_id.startsWith('evt_'));
+});
+
+test('API Controller: POST /runs/{run_id}/telemetry validates input and handles 404', async () => {
+  const mockRepo = new MockAgentLensRepository();
+  const controller = new ApiController(mockRepo);
+
+  // Non-existent run -> 404
+  const notFoundRes = await controller.ingestTelemetry('run_missing_123', {
+    events: [{ type: 'tool_call', name: 'search' }],
+  });
+  assert.equal(notFoundRes.statusCode, 404);
+  assert.equal(notFoundRes.body.error?.code, 'NOT_FOUND');
+
+  // Create real run to test validation
+  const runRes = await controller.createRun({
+    agent_name: 'test-agent',
+    prompt: 'Run test prompt',
+  });
+  const runId = runRes.body.data!.run_id;
+
+  // Invalid event type -> 400
+  const invalidTypeRes = await controller.ingestTelemetry(runId, {
+    events: [{ type: 'arbitrary_fake_type' as any, name: 'tool' }],
+  });
+  assert.equal(invalidTypeRes.statusCode, 400);
+  assert.equal(invalidTypeRes.body.error?.code, 'VALIDATION_ERROR');
+
+  // Missing event name -> 400
+  const missingNameRes = await controller.ingestTelemetry(runId, {
+    events: [{ type: 'tool_call', name: '' }],
+  });
+  assert.equal(missingNameRes.statusCode, 400);
+
+  // Invalid metric value -> 400
+  const invalidMetricRes = await controller.ingestTelemetry(runId, {
+    metrics: { total_tokens: -10 },
+  });
+  assert.equal(invalidMetricRes.statusCode, 400);
+});
+
+test('Lambda Handler: routes POST and GET /runs/{run_id}/telemetry', async () => {
+  const mockRepo = new MockAgentLensRepository();
+  const handler = createHandler(mockRepo);
+
+  // 1. Create a Run via Lambda POST /runs
+  const createRunEvent = {
+    rawPath: '/runs',
+    requestContext: { http: { method: 'POST' } },
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent_name: 'lambda-agent', prompt: 'Lambda prompt' }),
+  };
+  const createRes = (await handler(createRunEvent as any)) as any;
+  assert.equal(createRes.statusCode, 201);
+  const runId = JSON.parse(createRes.body).data.run_id;
+
+  // 2. Ingest telemetry via Lambda POST /runs/{run_id}/telemetry
+  const telemetryEvent = {
+    rawPath: `/runs/${runId}/telemetry`,
+    requestContext: { http: { method: 'POST' } },
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      status: 'completed',
+      events: [
+        { type: 'tool_call', name: 'calculate_tax', data: { amount: 100 } },
+        { type: 'metric', name: 'latency', data: { value: 120 } },
+      ],
+    }),
+  };
+  const ingestRes = (await handler(telemetryEvent as any)) as any;
+  assert.equal(ingestRes.statusCode, 200);
+  const ingestBody = JSON.parse(ingestRes.body);
+  assert.equal(ingestBody.data.ingested_events_count, 2);
+
+  // 3. Query telemetry via Lambda GET /runs/{run_id}/telemetry
+  const getTelemetryEvent = {
+    rawPath: `/runs/${runId}/telemetry`,
+    requestContext: { http: { method: 'GET' } },
+    headers: {},
+  };
+  const getRes = (await handler(getTelemetryEvent as any)) as any;
+  assert.equal(getRes.statusCode, 200);
+  const getBody = JSON.parse(getRes.body);
+  assert.equal(getBody.data.length, 2);
+  assert.equal(getBody.data[0].name, 'calculate_tax');
+
+  // 4. Verify GET /runs/{run_id} still works and shows completed status
+  const getRunEvent = {
+    rawPath: `/runs/${runId}`,
+    requestContext: { http: { method: 'GET' } },
+    headers: {},
+  };
+  const getRunRes = (await handler(getRunEvent as any)) as any;
+  assert.equal(getRunRes.statusCode, 200);
+  const getRunBody = JSON.parse(getRunRes.body);
+  assert.equal(getRunBody.data.status, 'completed');
+  assert.equal(getRunBody.data.events_count, 2);
 });

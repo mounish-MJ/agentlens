@@ -5,8 +5,17 @@ import type {
   CreateRunRequest,
   Incident,
   HealthCheckResponse,
+  TelemetryEvent,
+  TelemetryIngestionResult,
+  IngestTelemetryRequest,
 } from '../types/contracts.js';
 import type { IAgentLensRepository } from '../repository/agentlens-repository.js';
+import {
+  type ITelemetryService,
+  TelemetryService,
+  TelemetryValidationError,
+  RunNotFoundError,
+} from '../services/telemetry-service.js';
 
 export interface ControllerResponse<T = unknown> {
   statusCode: number;
@@ -22,7 +31,14 @@ const COMMON_HEADERS: Record<string, string> = {
 };
 
 export class ApiController {
-  constructor(private readonly repo: IAgentLensRepository) {}
+  private readonly telemetryService: ITelemetryService;
+
+  constructor(
+    private readonly repo: IAgentLensRepository,
+    customTelemetryService?: ITelemetryService
+  ) {
+    this.telemetryService = customTelemetryService || new TelemetryService(this.repo);
+  }
 
   // ==========================================
   // GET /health
@@ -300,6 +316,206 @@ export class ApiController {
           error: {
             code: 'INTERNAL_SERVER_ERROR',
             message: 'Failed to retrieve Incident from data store.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+  }
+
+  // ==========================================
+  // POST /runs/{run_id}/telemetry
+  // ==========================================
+  async ingestTelemetry(
+    run_id?: string,
+    rawBody?: unknown
+  ): Promise<ControllerResponse<TelemetryIngestionResult>> {
+    const now = new Date().toISOString();
+
+    if (!run_id || typeof run_id !== 'string' || run_id.trim().length === 0) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Parameter "run_id" is required.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'BAD_REQUEST',
+            message: 'Request body must be a valid JSON object.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    try {
+      const result = await this.telemetryService.ingestRunTelemetry(
+        run_id.trim(),
+        rawBody as IngestTelemetryRequest
+      );
+
+      return {
+        statusCode: 200,
+        headers: COMMON_HEADERS,
+        body: {
+          success: true,
+          data: result,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    } catch (err: unknown) {
+      if (err instanceof RunNotFoundError) {
+        return {
+          statusCode: 404,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'NOT_FOUND',
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      if (err instanceof TelemetryValidationError) {
+        return {
+          statusCode: 400,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: err.code || 'VALIDATION_ERROR',
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      console.error(`[ApiController] Error ingesting telemetry for Run ${run_id}:`, err);
+      return {
+        statusCode: 500,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to ingest telemetry into data store.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+  }
+
+  // ==========================================
+  // GET /runs/{run_id}/telemetry
+  // ==========================================
+  async getRunTelemetry(
+    run_id?: string,
+    limitStr?: string
+  ): Promise<ControllerResponse<TelemetryEvent[]>> {
+    const now = new Date().toISOString();
+
+    if (!run_id || typeof run_id !== 'string' || run_id.trim().length === 0) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Parameter "run_id" is required.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    const limit = limitStr ? parseInt(limitStr, 10) : undefined;
+    if (limit !== undefined && (isNaN(limit) || limit <= 0)) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Query parameter "limit" must be a positive integer.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    try {
+      const events = await this.telemetryService.getRunTelemetry(run_id.trim(), limit);
+
+      return {
+        statusCode: 200,
+        headers: COMMON_HEADERS,
+        body: {
+          success: true,
+          data: events,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    } catch (err: unknown) {
+      if (err instanceof RunNotFoundError) {
+        return {
+          statusCode: 404,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'NOT_FOUND',
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      if (err instanceof TelemetryValidationError) {
+        return {
+          statusCode: 400,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: err.code || 'VALIDATION_ERROR',
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      console.error(`[ApiController] Error retrieving telemetry for Run ${run_id}:`, err);
+      return {
+        statusCode: 500,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to retrieve telemetry from data store.',
           },
           timestamp: now,
         },

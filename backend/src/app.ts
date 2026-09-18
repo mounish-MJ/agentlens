@@ -46,6 +46,21 @@ export function createApp(customRepo?: IAgentLensRepository) {
     res.status(result.statusCode).json(result.body);
   });
 
+  // POST /runs/:run_id/telemetry (Phase 4 Ingestion Boundary)
+  application.post('/runs/:run_id/telemetry', async (req: Request, res: Response) => {
+    const runId = Array.isArray(req.params.run_id) ? req.params.run_id[0] : req.params.run_id;
+    const result = await controller.ingestTelemetry(runId, req.body);
+    res.status(result.statusCode).json(result.body);
+  });
+
+  // GET /runs/:run_id/telemetry (Phase 4 Telemetry Retrieval)
+  application.get('/runs/:run_id/telemetry', async (req: Request, res: Response) => {
+    const runId = Array.isArray(req.params.run_id) ? req.params.run_id[0] : req.params.run_id;
+    const limit = typeof req.query.limit === 'string' ? req.query.limit : undefined;
+    const result = await controller.getRunTelemetry(runId, limit);
+    res.status(result.statusCode).json(result.body);
+  });
+
   // GET /incidents
   application.get('/incidents', async (_req: Request, res: Response) => {
     const result = await controller.listIncidents();

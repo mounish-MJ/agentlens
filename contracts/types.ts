@@ -25,10 +25,64 @@ export interface HealthCheckResponse {
 }
 
 // ==========================================
-// 1. Run Entity
+// 1. Run Entity & Telemetry Ingestion
 // ==========================================
 
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export const CANONICAL_TELEMETRY_EVENT_TYPES = [
+  'tool_call',
+  'model_invocation',
+  'state_change',
+  'log',
+  'metric',
+] as const;
+
+export type TelemetryEventType = (typeof CANONICAL_TELEMETRY_EVENT_TYPES)[number];
+
+export interface ExecutionMetrics {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  duration_ms?: number;
+  tool_calls_count?: number;
+}
+
+export interface TelemetryEvent {
+  event_id: string;
+  run_id: string;
+  timestamp: string;
+  type: TelemetryEventType;
+  name: string;
+  data?: Record<string, unknown>;
+  duration_ms?: number;
+  status?: 'success' | 'error' | 'pending';
+}
+
+export interface TelemetryEventInput {
+  type: TelemetryEventType;
+  name: string;
+  data?: Record<string, unknown>;
+  timestamp?: string;
+  duration_ms?: number;
+  status?: 'success' | 'error' | 'pending';
+}
+
+export interface IngestTelemetryRequest {
+  events?: TelemetryEventInput[];
+  metrics?: Partial<ExecutionMetrics>;
+  status?: RunStatus;
+  result?: string;
+  error?: string;
+}
+
+export interface TelemetryIngestionResult {
+  run_id: string;
+  ingested_events_count: number;
+  total_events_count: number;
+  status: RunStatus;
+  updated_at: string;
+}
 
 export interface Run {
   run_id: string;
@@ -37,6 +91,8 @@ export interface Run {
   prompt: string;
   result?: string;
   error?: string;
+  metrics?: ExecutionMetrics;
+  events_count?: number;
   metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
