@@ -80,7 +80,7 @@ cp frontend/.env.example frontend/.env
 |---|---|---|
 | `PORT` | Local HTTP server port | `4000` |
 | `NODE_ENV` | Environment identifier | `development` |
-| `AWS_REGION` | Target AWS Region | `us-east-1` |
+| `AWS_REGION` | Target AWS Region (Project Blank Slate) | `ap-southeast-2` |
 | `DYNAMODB_TABLE_NAME` | DynamoDB table name | `agentlens-data-dev` |
 
 #### Frontend Environment Variables (`frontend/.env.example`)
@@ -129,9 +129,9 @@ npm run build
 
 ---
 
-### 5. Deploying to AWS (Phase 2)
+### 5. Deploying to AWS (Phase 2 — Project Blank Slate)
 
 ```bash
-# Deploy to AWS us-east-1 (or specify AWS_REGION)
+# Deploy to AWS ap-southeast-2 (Project Blank Slate default)
 npm run deploy:backend
 ```

@@ -40,33 +40,32 @@ npm run build
 
 ---
 
-## AWS Deployment Setup (Phase 2)
+## AWS Deployment Setup (Phase 2 — Project Blank Slate)
 
 ### 1. AWS Credentials Configuration
-Configure credentials outside the repository:
+Authenticate via standard AWS CLI:
 ```bash
-aws configure
-# Or export credentials in your shell:
-export AWS_ACCESS_KEY_ID="<your-access-key>"
-export AWS_SECRET_ACCESS_KEY="<your-secret-key>"
-export AWS_REGION="us-east-1"
+aws login
+# Or configure default region:
+aws configure set region ap-southeast-2
 ```
 
-Verify authentication:
+Verify authentication and target region:
 ```bash
 aws sts get-caller-identity
+# Target region: ap-southeast-2 (Project Blank Slate)
 ```
 
 ### 2. Deploy the Infrastructure Stack
 ```bash
-# Using root npm script
+# Using root npm script (defaults to ap-southeast-2)
 npm run deploy:backend
 
 # Or directly via deploy.sh
-AWS_REGION=us-east-1 ENVIRONMENT=dev bash infrastructure/deploy.sh
+AWS_REGION=ap-southeast-2 ENVIRONMENT=dev bash infrastructure/deploy.sh
 ```
 
 ### 3. Verify Deployed Health Endpoint
 ```bash
-curl -i https://<api-id>.execute-api.us-east-1.amazonaws.com/health
+curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/health
 ```

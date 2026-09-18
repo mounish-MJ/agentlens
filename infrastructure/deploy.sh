@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1. Resolve Region (Priority: AWS_REGION env var -> AWS CLI configured region -> default us-east-1)
+# 1. Resolve Region (Priority: AWS_REGION env var -> AWS CLI configured region -> default ap-southeast-2)
 CLI_REGION=$(aws configure get region 2>/dev/null || true)
-REGION="${AWS_REGION:-${CLI_REGION:-us-east-1}}"
+REGION="${AWS_REGION:-${CLI_REGION:-ap-southeast-2}}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 STACK_NAME="agentlens-backend-${ENVIRONMENT}-stack"
 TEMPLATE_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/template.yaml"

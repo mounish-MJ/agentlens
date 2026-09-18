@@ -1,7 +1,7 @@
 # AgentLens Architecture Overview
 
-## Member 4 Platform / UI Scope
-AgentLens Platform/UI is structured as a modern serverless web application designed for fast iteration, high availability, and secure cloud operations.
+## Member 4 Platform / UI Scope (Project Blank Slate — ap-southeast-2)
+AgentLens Platform/UI is structured as a modern serverless web application designed for fast iteration, high availability, and secure cloud operations in **ap-southeast-2** (Account: 272175292167).
 
 ### High-Level Architecture Flow
 

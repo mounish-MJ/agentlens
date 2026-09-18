@@ -67,11 +67,11 @@ This directory contains the reproducible AWS infrastructure definition for the A
 Run the deployment script or npm command:
 
 ```bash
-# Using npm
+# Using npm (defaults to ap-southeast-2)
 npm run deploy:backend
 
 # Or directly via script
-AWS_REGION=us-east-1 ENVIRONMENT=dev bash infrastructure/deploy.sh
+AWS_REGION=ap-southeast-2 ENVIRONMENT=dev bash infrastructure/deploy.sh
 ```
 
 Or deploy directly via AWS CloudFormation CLI:
@@ -81,7 +81,7 @@ aws cloudformation deploy \
   --stack-name agentlens-backend-dev-stack \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides Environment=dev TableName=agentlens-data \
-  --region us-east-1
+  --region ap-southeast-2
 ```
 
 ---
@@ -90,16 +90,16 @@ aws cloudformation deploy \
 
 1. **Test Health Endpoint:**
    ```bash
-   curl -i https://<api-id>.execute-api.us-east-1.amazonaws.com/health
+   curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/health
    ```
    Expected response: HTTP 200 with JSON payload `{"status":"ok","service":"agentlens-backend",...}`
 
 2. **Verify DynamoDB Table:**
    ```bash
-   aws dynamodb describe-table --table-name agentlens-data-dev --region us-east-1
+   aws dynamodb describe-table --table-name agentlens-data-dev --region ap-southeast-2
    ```
 
 3. **Inspect CloudWatch Logs:**
    ```bash
-   aws logs tail /aws/lambda/agentlens-backend-dev --follow --region us-east-1
+   aws logs tail /aws/lambda/agentlens-backend-dev --follow --region ap-southeast-2
    ```
