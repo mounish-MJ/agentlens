@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REGION="${AWS_REGION:-us-east-1}"
+# 1. Resolve Region (Priority: AWS_REGION env var -> AWS CLI configured region -> default us-east-1)
+CLI_REGION=$(aws configure get region 2>/dev/null || true)
+REGION="${AWS_REGION:-${CLI_REGION:-us-east-1}}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 STACK_NAME="agentlens-backend-${ENVIRONMENT}-stack"
 TEMPLATE_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/template.yaml"
@@ -13,40 +15,50 @@ echo "Stack Name:         ${STACK_NAME}"
 echo "Template File:      ${TEMPLATE_FILE}"
 echo "==================================================="
 
-# 1. Check AWS CLI and Credentials
+# 2. Check AWS CLI and Validate Authentication via standard credential chain
 echo "--> Checking AWS CLI and credentials..."
 if ! command -v aws >/dev/null 2>&1; then
   echo "[ERROR] 'aws' CLI is not installed or not in PATH."
   exit 1
 fi
 
-if ! aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
-  echo "[ERROR] No valid AWS credentials found."
-  echo "Please configure AWS credentials using 'aws configure' or export AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION."
+# Validate authentication using standard AWS CLI credential provider chain
+if ! CALLER_IDENTITY=$(aws sts get-caller-identity --region "${REGION}" --output json 2>&1); then
+  echo "[ERROR] AWS authentication failed via AWS CLI credential chain:"
+  echo "${CALLER_IDENTITY}"
+  echo ""
+  echo "Please authenticate using the AWS CLI (e.g., 'aws login' or configure your active profile/role)."
   exit 1
 fi
 
-CALLER_IDENTITY=$(aws sts get-caller-identity --region "${REGION}" --output json)
-ACCOUNT_ID=$(echo "${CALLER_IDENTITY}" | grep -o '"Account": "[^"]*' | cut -d'"' -f4)
-echo "Authenticated as AWS Account: ${ACCOUNT_ID}"
+ACCOUNT_ID=$(echo "${CALLER_IDENTITY}" | grep -o '"Account": "[^"]*' | cut -d'"' -f4 || echo "unknown")
+ARN=$(echo "${CALLER_IDENTITY}" | grep -o '"Arn": "[^"]*' | cut -d'"' -f4 || echo "unknown")
+echo "Authenticated via AWS CLI:"
+echo "  Account: ${ACCOUNT_ID}"
+echo "  Arn:     ${ARN}"
 
-# 2. Build Backend TypeScript
+# 3. Build Backend TypeScript
 echo "--> Compiling backend TypeScript..."
 npm --prefix "$(dirname "$0")/../backend" run build
 
-# 3. Deploy CloudFormation Stack
+# 4. Deploy CloudFormation Stack
 echo "--> Deploying CloudFormation stack: ${STACK_NAME}..."
-aws cloudformation deploy \
+if ! aws cloudformation deploy \
   --template-file "${TEMPLATE_FILE}" \
   --stack-name "${STACK_NAME}" \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides Environment="${ENVIRONMENT}" TableName="agentlens-data" \
   --region "${REGION}" \
-  --no-fail-on-empty-changeset
+  --no-fail-on-empty-changeset; then
+  echo ""
+  echo "[ERROR] CloudFormation deployment failed."
+  echo "Please review the AWS error message above to identify the failing resource or permission constraint."
+  exit 1
+fi
 
-echo "--> Deployment finished successfully!"
+echo "--> CloudFormation deployment succeeded!"
 
-# 4. Extract Stack Outputs
+# 5. Extract Stack Outputs
 echo "--> Retrieving stack outputs..."
 OUTPUTS=$(aws cloudformation describe-stacks \
   --stack-name "${STACK_NAME}" \
@@ -64,17 +76,17 @@ echo "Health Endpoint:     ${HEALTH_URL}"
 echo "DynamoDB Table:      ${TABLE_NAME}"
 echo "==================================================="
 
-# 5. Verify Deployed Health Endpoint
+# 6. Verify Deployed Health Endpoint
 if [ -n "${HEALTH_URL}" ]; then
   echo "--> Testing deployed /health endpoint..."
   curl -s -i "${HEALTH_URL}"
   echo ""
 fi
 
-# 6. Verify DynamoDB Table Status
+# 7. Verify DynamoDB Table Status
 if [ -n "${TABLE_NAME}" ]; then
   echo "--> Verifying DynamoDB table status..."
-  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" --query 'Table.TableStatus' --output text
+  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" --query 'Table.TableStatus' --output text || true
 fi
 
 echo "=== Deployment and Verification Complete! ==="

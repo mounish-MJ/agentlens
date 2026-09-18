@@ -61,7 +61,7 @@ This directory contains the reproducible AWS infrastructure definition for the A
 
 ### Prerequisites
 - AWS CLI v2 installed
-- Valid AWS credentials configured (`aws configure` or environment variables `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`)
+- Active AWS CLI authentication via standard credential chain (`aws login`, assumed role, SSO, or configured profile)
 
 ### Deploying the Stack
 Run the deployment script or npm command:
