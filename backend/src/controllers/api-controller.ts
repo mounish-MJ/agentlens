@@ -159,6 +159,75 @@ export class ApiController {
   }
 
   // ==========================================
+  // GET /runs
+  // ==========================================
+  async listRuns(limitStr?: string): Promise<ControllerResponse<Run[]>> {
+    const now = new Date().toISOString();
+    let limit: number | undefined = undefined;
+
+    if (limitStr !== undefined && limitStr !== null && limitStr !== '') {
+      const trimmed = limitStr.trim();
+      if (!/^\d+$/.test(trimmed)) {
+        return {
+          statusCode: 400,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: 'Query parameter "limit" must be a positive integer between 1 and 100.',
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      limit = parseInt(trimmed, 10);
+      if (limit <= 0 || limit > 100) {
+        return {
+          statusCode: 400,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: 'Query parameter "limit" must be a positive integer between 1 and 100.',
+            },
+            timestamp: now,
+          },
+        };
+      }
+    }
+
+    try {
+      const runs = await this.repo.listRuns(limit);
+      return {
+        statusCode: 200,
+        headers: COMMON_HEADERS,
+        body: {
+          success: true,
+          data: runs,
+          timestamp: now,
+        },
+      };
+    } catch (err: unknown) {
+      console.error('[ApiController] Error listing Runs:', err);
+      return {
+        statusCode: 500,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to list Runs from data store.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+  }
+
+  // ==========================================
   // GET /runs/{run_id}
   // ==========================================
   async getRun(run_id?: string): Promise<ControllerResponse<Run>> {

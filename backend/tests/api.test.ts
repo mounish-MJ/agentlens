@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { IAgentLensRepository } from '../src/repository/agentlens-repository.js';
+import { TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { AgentLensRepository, type IAgentLensRepository } from '../src/repository/agentlens-repository.js';
 import { createHandler } from '../src/handler.js';
 import { ApiController } from '../src/controllers/api-controller.js';
 import type {
@@ -32,6 +33,12 @@ class MockAgentLensRepository implements IAgentLensRepository {
 
   async getRun(run_id: string): Promise<Run | null> {
     return this.runs.get(run_id) || null;
+  }
+
+  async listRuns(limit = 50): Promise<Run[]> {
+    return Array.from(this.runs.values())
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, limit);
   }
 
   async recordTelemetryEvents(run_id: string, events: TelemetryEvent[]): Promise<TelemetryEvent[]> {
@@ -500,4 +507,182 @@ test('Lambda Handler: routes POST and GET /runs/{run_id}/telemetry', async () =>
   const getRunBody = JSON.parse(getRunRes.body);
   assert.equal(getRunBody.data.status, 'completed');
   assert.equal(getRunBody.data.events_count, 2);
+});
+
+test('API Controller: GET /runs returns empty array when no runs exist', async () => {
+  const mockRepo = new MockAgentLensRepository();
+  const controller = new ApiController(mockRepo);
+
+  const res = await controller.listRuns();
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.success, true);
+  assert.deepEqual(res.body.data, []);
+});
+
+test('API Controller: GET /runs returns chronological list of runs with sensible limit', async () => {
+  const mockRepo = new MockAgentLensRepository();
+  const controller = new ApiController(mockRepo);
+
+  await controller.createRun({ agent_name: 'agent-1', prompt: 'Prompt 1' });
+  await new Promise((r) => setTimeout(r, 5));
+  await controller.createRun({ agent_name: 'agent-2', prompt: 'Prompt 2' });
+  await new Promise((r) => setTimeout(r, 5));
+  await controller.createRun({ agent_name: 'agent-3', prompt: 'Prompt 3' });
+
+  // List all
+  const res = await controller.listRuns();
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data?.length, 3);
+  // Newest first
+  assert.equal(res.body.data![0].agent_name, 'agent-3');
+
+  // Limit = 2
+  const limitRes = await controller.listRuns('2');
+  assert.equal(limitRes.statusCode, 200);
+  assert.equal(limitRes.body.data?.length, 2);
+});
+
+test('API Controller: GET /runs validates limit query parameter and rejects invalid input', async () => {
+  const mockRepo = new MockAgentLensRepository();
+  const controller = new ApiController(mockRepo);
+
+  // Negative limit
+  const negRes = await controller.listRuns('-5');
+  assert.equal(negRes.statusCode, 400);
+  assert.equal(negRes.body.error?.code, 'VALIDATION_ERROR');
+
+  // Zero limit
+  const zeroRes = await controller.listRuns('0');
+  assert.equal(zeroRes.statusCode, 400);
+
+  // Non-numeric limit
+  const nonNumRes = await controller.listRuns('invalid_num');
+  assert.equal(nonNumRes.statusCode, 400);
+
+  // Exceeding max limit (> 100)
+  const exceedRes = await controller.listRuns('500');
+  assert.equal(exceedRes.statusCode, 400);
+
+  // Non-integer float/decimal limit
+  const decimalRes = await controller.listRuns('1.5');
+  assert.equal(decimalRes.statusCode, 400);
+  assert.equal(decimalRes.body.error?.code, 'VALIDATION_ERROR');
+});
+
+test('API Controller: GET /runs accepts valid boundary limits (limit=1 and limit=100)', async () => {
+  const mockRepo = new MockAgentLensRepository();
+  const controller = new ApiController(mockRepo);
+
+  await controller.createRun({ agent_name: 'agent-1', prompt: 'Prompt 1' });
+  await controller.createRun({ agent_name: 'agent-2', prompt: 'Prompt 2' });
+
+  // Boundary: limit=1
+  const limit1Res = await controller.listRuns('1');
+  assert.equal(limit1Res.statusCode, 200);
+  assert.equal(limit1Res.body.success, true);
+  assert.equal(limit1Res.body.data?.length, 1);
+
+  // Boundary: limit=100
+  const limit100Res = await controller.listRuns('100');
+  assert.equal(limit100Res.statusCode, 200);
+  assert.equal(limit100Res.body.success, true);
+  assert.equal(limit100Res.body.data?.length, 2);
+});
+
+test('Lambda Handler: routes GET /runs with query parameters', async () => {
+  const mockRepo = new MockAgentLensRepository();
+  const handler = createHandler(mockRepo);
+
+  await mockRepo.createRun({
+    run_id: 'run_lambda_1',
+    agent_name: 'lambda-test',
+    status: 'pending',
+    prompt: 'Prompt',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+
+  const getRunsEvent = {
+    rawPath: '/runs',
+    requestContext: { http: { method: 'GET' } },
+    headers: {},
+    queryStringParameters: { limit: '10' },
+  };
+
+  const res = (await handler(getRunsEvent as any)) as any;
+  assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.success, true);
+  assert.equal(body.data.length, 1);
+  assert.equal(body.data[0].run_id, 'run_lambda_1');
+});
+
+test('AgentLensRepository: createRun writes primary Run and RUNS timeline item in a single TransactWriteCommand', async () => {
+  let capturedCommand: any = null;
+
+  const mockDocClient = {
+    send: async (command: any) => {
+      capturedCommand = command;
+      return {};
+    },
+  } as any;
+
+  const repo = new AgentLensRepository(mockDocClient, 'agentlens-test-table');
+
+  const run: Run = {
+    run_id: 'run_tx_123',
+    agent_name: 'test-agent',
+    status: 'pending',
+    prompt: 'Transaction test',
+    created_at: '2026-09-18T10:00:00.000Z',
+    updated_at: '2026-09-18T10:00:00.000Z',
+  };
+
+  const result = await repo.createRun(run);
+  assert.equal(result.run_id, 'run_tx_123');
+
+  assert.ok(capturedCommand instanceof TransactWriteCommand, 'Expected TransactWriteCommand to be used');
+  const items = capturedCommand.input.TransactItems;
+  assert.equal(items.length, 2);
+
+  // 1. Primary Run item: pk = RUN#<run_id>, sk = METADATA
+  assert.equal(items[0].Put.TableName, 'agentlens-test-table');
+  assert.equal(items[0].Put.Item.pk, 'RUN#run_tx_123');
+  assert.equal(items[0].Put.Item.sk, 'METADATA');
+  assert.equal(items[0].Put.Item.entity_type, 'RUN');
+  assert.equal(items[0].Put.Item.run_id, 'run_tx_123');
+  assert.equal(items[0].Put.Item.agent_name, 'test-agent');
+
+  // 2. RUNS timeline item: pk = RUNS, sk = RUN#<created_at>#<run_id>
+  assert.equal(items[1].Put.TableName, 'agentlens-test-table');
+  assert.equal(items[1].Put.Item.pk, 'RUNS');
+  assert.equal(items[1].Put.Item.sk, 'RUN#2026-09-18T10:00:00.000Z#run_tx_123');
+  assert.equal(items[1].Put.Item.entity_type, 'RUN_INDEX');
+  assert.equal(items[1].Put.Item.run_id, 'run_tx_123');
+});
+
+test('AgentLensRepository: createRun propagates transaction error if TransactWriteCommand fails', async () => {
+  const mockDocClient = {
+    send: async () => {
+      throw new Error('TransactionCanceledException: Transaction cancelled');
+    },
+  } as any;
+
+  const repo = new AgentLensRepository(mockDocClient, 'agentlens-test-table');
+
+  const run: Run = {
+    run_id: 'run_tx_fail',
+    agent_name: 'test-agent',
+    status: 'pending',
+    prompt: 'Transaction fail test',
+    created_at: '2026-09-18T10:00:00.000Z',
+    updated_at: '2026-09-18T10:00:00.000Z',
+  };
+
+  await assert.rejects(
+    async () => {
+      await repo.createRun(run);
+    },
+    { message: /TransactionCanceledException/ }
+  );
 });

@@ -14,14 +14,14 @@ Agent Execution (Member 1)
        ▼ (AWS_PROXY v2 integration)
 [ AWS Lambda Backend (agentlens-backend-dev) ] ──► [ CloudWatch Logs (/aws/lambda/agentlens-backend-dev) ]
        │
-       ▼ (TelemetryService Ingestion & Validation Layer)
+       ▼ (TelemetryService & Controller Layer)
 [ AgentLens Repository Layer ]
        │
        ▼ (IAM Least-Privilege Role: agentlens-lambda-role-dev)
 [ Amazon DynamoDB (agentlens-data-dev) ]
        │
-       ▲
-[ React UI Dashboard (Amplify) ] (Member 4)
+       ▲ (Real Data REST API Client)
+[ React UI Dashboard (AWS Amplify Hosted) ] (Member 4)
 ```
 
 ---
@@ -33,11 +33,11 @@ Agent Execution (Member 1)
 | **Member 1** | Agent Execution | Agent prompt loops, LLM calls, tool invocation execution | Emits telemetry via `POST /runs/{run_id}/telemetry` |
 | **Member 2** | Detection & Anomaly | Tool-loop, token anomaly, retrieval failure, and wrong-tool detectors | Consumes telemetry & runs; generates `Incident` entities |
 | **Member 3** | Analysis & Evaluation | Bedrock RCA, chaos generation, replay engine, regression tests | Evaluates runs, creates `Evaluation` & `ReplayRecord` entities |
-| **Member 4** | Platform, Persistence & UI (THIS WORKSPACE) | AWS serverless foundation, API Gateway, Lambda, DynamoDB persistence, Telemetry Ingestion boundary, and React UI | Exposes `POST /runs/{run_id}/telemetry` and provides persistent queries |
+| **Member 4** | Platform, Persistence & UI (THIS WORKSPACE) | AWS serverless foundation, API Gateway, Lambda, DynamoDB persistence, Telemetry Ingestion, GET /runs, React UI & Amplify | Exposes full API (`/runs`, `/telemetry`, `/incidents`) & web dashboard |
 
 ---
 
-## Phase 4: Platform Integration & Telemetry Persistence
+## Phase 5: Platform UI & Zero-Scan DynamoDB Persistence
 
 ### 1. Ingestion Boundary & Telemetry Contract
 Incoming telemetry records real execution observability from agent workflows into DynamoDB:
@@ -56,6 +56,7 @@ Incoming telemetry records real execution observability from agent workflows int
 | Entity | Partition Key (`pk`) | Sort Key (`sk`) | Access Pattern |
 |---|---|---|---|
 | `Run (Metadata)` | `RUN#<run_id>` | `METADATA` | `GetItem(pk=RUN#<id>, sk=METADATA)` (O(1)) |
+| `Runs (Timeline)` | `RUNS` | `RUN#<created_at>#<run_id>` | `Query(pk=RUNS, ScanIndexForward=false)` (O(k)) |
 | `Run Telemetry Events` | `RUN#<run_id>` | `EVENT#<timestamp>#<event_id>` | `Query(pk=RUN#<id>, begins_with(sk, 'EVENT#'))` (O(k)) |
 | `Incident (Primary)` | `INCIDENT#<incident_id>` | `METADATA` | `GetItem(pk=INCIDENT#<id>, sk=METADATA)` (O(1)) |
 | `Incidents (Timeline)` | `INCIDENTS` | `INCIDENT#<created_at>#<id>` | `Query(pk=INCIDENTS, ScanIndexForward=false)` (O(k)) |
@@ -66,16 +67,18 @@ Incoming telemetry records real execution observability from agent workflows int
 ### 3. Implemented API Endpoints
 
 - `GET /health` — Foundation health probe returning runtime status, region, and table name.
-- `POST /runs` — Validate and create agent run with generated `run_id`.
+- `POST /runs` — Validate and create agent run with generated `run_id`. Synchronizes both primary and timeline items.
+- `GET /runs?limit={n}` — List chronological agent runs (newest first) using `Query(pk=RUNS)` without table scan.
 - `GET /runs/{run_id}` — Point lookup of run by ID (returns status, metrics, and `events_count`).
-- `POST /runs/{run_id}/telemetry` — Ingest telemetry events, execution metrics, and update Run status.
+- `POST /runs/{run_id}/telemetry` — Ingest telemetry events, execution metrics, and update Run status across both items.
 - `GET /runs/{run_id}/telemetry` — Retrieve chronological telemetry events for a Run (oldest to newest).
 - `GET /incidents` — Query chronological incidents without table scan (returns empty collection if none).
 - `GET /incidents/{incident_id}` — Point lookup of incident by ID.
 
 ---
 
-### Key Principles
-1. **Separation of Concerns**: HTTP controllers serialize/deserialize; `TelemetryService` validates and normalizes; `AgentLensRepository` executes DynamoDB commands.
-2. **Environment Portability**: Local execution via lightweight development server (`http://localhost:4000`); cloud execution via AWS Lambda without rewriting core handler logic.
-3. **Strict Zero-Secret Policy**: No AWS keys, session tokens, or private secrets in source control.
+### 4. AWS Amplify Build Configuration
+The React application is prepared for deployment via AWS Amplify using `amplify.yml`:
+- Monorepo build step: `npm --prefix frontend ci && npm --prefix frontend run build`
+- Target artifact directory: `frontend/dist`
+- Environment variable: `VITE_API_BASE_URL` points to the deployed API Gateway endpoint.

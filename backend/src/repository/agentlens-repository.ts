@@ -4,6 +4,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import type {
   Run,
@@ -19,6 +20,7 @@ import type {
 export interface IAgentLensRepository {
   createRun(run: Run): Promise<Run>;
   getRun(run_id: string): Promise<Run | null>;
+  listRuns(limit?: number): Promise<Run[]>;
   recordTelemetryEvents(run_id: string, events: TelemetryEvent[]): Promise<TelemetryEvent[]>;
   getTelemetryEvents(run_id: string, limit?: number): Promise<TelemetryEvent[]>;
   updateRunTelemetry(
@@ -66,17 +68,39 @@ export class AgentLensRepository implements IAgentLensRepository {
   // ===================================================
 
   async createRun(run: Run): Promise<Run> {
-    const item = {
+    // 1. Primary point lookup item: pk = RUN#<run_id>, sk = METADATA
+    const primaryItem = {
       pk: `RUN#${run.run_id}`,
       sk: 'METADATA',
       entity_type: 'RUN',
       ...run,
     };
 
+    // 2. Collection timeline item: pk = RUNS, sk = RUN#<created_at>#<run_id>
+    const timelineItem = {
+      pk: 'RUNS',
+      sk: `RUN#${run.created_at}#${run.run_id}`,
+      entity_type: 'RUN_INDEX',
+      ...run,
+    };
+
+    // Atomic transaction ensuring both items are written together or neither is committed
     await this.docClient.send(
-      new PutCommand({
-        TableName: this.tableName,
-        Item: item,
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: primaryItem,
+            },
+          },
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: timelineItem,
+            },
+          },
+        ],
       })
     );
 
@@ -105,6 +129,33 @@ export class AgentLensRepository implements IAgentLensRepository {
     };
 
     return runData as Run;
+  }
+
+  async listRuns(limit = 50): Promise<Run[]> {
+    const response = await this.docClient.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: 'pk = :pk',
+        ExpressionAttributeValues: {
+          ':pk': 'RUNS',
+        },
+        ScanIndexForward: false, // Newest runs first
+        Limit: limit,
+      })
+    );
+
+    if (!response.Items || response.Items.length === 0) {
+      return [];
+    }
+
+    return response.Items.map((item) => {
+      const { pk, sk, entity_type, ...runData } = item as Run & {
+        pk: string;
+        sk: string;
+        entity_type: string;
+      };
+      return runData as Run;
+    });
   }
 
   // ===================================================

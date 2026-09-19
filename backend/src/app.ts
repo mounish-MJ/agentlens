@@ -39,6 +39,13 @@ export function createApp(customRepo?: IAgentLensRepository) {
     res.status(result.statusCode).json(result.body);
   });
 
+  // GET /runs (Phase 5 List Runs)
+  application.get('/runs', async (req: Request, res: Response) => {
+    const limit = typeof req.query.limit === 'string' ? req.query.limit : undefined;
+    const result = await controller.listRuns(limit);
+    res.status(result.statusCode).json(result.body);
+  });
+
   // GET /runs/:run_id
   application.get('/runs/:run_id', async (req: Request, res: Response) => {
     const runId = Array.isArray(req.params.run_id) ? req.params.run_id[0] : req.params.run_id;

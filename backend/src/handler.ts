@@ -94,14 +94,25 @@ export function createHandler(customRepo?: IAgentLensRepository) {
       };
     }
 
-    // 2. POST /runs
-    if (method === 'POST' && normalizedPath === '/runs') {
-      const result = await controller.createRun(parsedBody);
-      return {
-        statusCode: result.statusCode,
-        headers: result.headers,
-        body: JSON.stringify(result.body),
-      };
+    // 2. POST /runs & GET /runs (Phase 5 List Runs)
+    if (normalizedPath === '/runs') {
+      if (method === 'POST') {
+        const result = await controller.createRun(parsedBody);
+        return {
+          statusCode: result.statusCode,
+          headers: result.headers,
+          body: JSON.stringify(result.body),
+        };
+      }
+      if (method === 'GET') {
+        const limit = 'queryStringParameters' in event ? event.queryStringParameters?.limit : undefined;
+        const result = await controller.listRuns(limit);
+        return {
+          statusCode: result.statusCode,
+          headers: result.headers,
+          body: JSON.stringify(result.body),
+        };
+      }
     }
 
     // 3. POST & GET /runs/{run_id}/telemetry (Phase 4 Telemetry Ingestion & Retrieval)

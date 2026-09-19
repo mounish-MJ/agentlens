@@ -84,3 +84,17 @@ curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents
 # 5. Get Incident by ID
 curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents/<incident_id>
 ```
+
+---
+
+## AWS Amplify Frontend Deployment (Phase 5)
+
+The frontend is prepared for continuous deployment via AWS Amplify:
+
+1. **Build Specification (`amplify.yml`)**:
+   - `preBuild`: runs `npm --prefix frontend ci` using `frontend/package-lock.json`
+   - `build`: runs `npm --prefix frontend run build` (`tsc -b && vite build`)
+   - `baseDirectory`: `frontend/dist`
+2. **Environment Variable Configuration**:
+   - In AWS Amplify Console, set `VITE_API_BASE_URL` to your deployed API Gateway endpoint (e.g., `https://<api-id>.execute-api.ap-southeast-2.amazonaws.com`).
+   - No AWS credentials or secrets are stored in the frontend or Amplify configuration.
