@@ -68,9 +68,32 @@ export function createApp(customRepo?: IAgentLensRepository) {
     res.status(result.statusCode).json(result.body);
   });
 
-  // GET /incidents
-  application.get('/incidents', async (_req: Request, res: Response) => {
-    const result = await controller.listIncidents();
+  // GET /runs/:run_id/incidents (Phase 6 Run-Incident Association)
+  application.get('/runs/:run_id/incidents', async (req: Request, res: Response) => {
+    const runId = Array.isArray(req.params.run_id) ? req.params.run_id[0] : req.params.run_id;
+    const limit = typeof req.query.limit === 'string' ? req.query.limit : undefined;
+    const result = await controller.listIncidentsByRun(runId, limit);
+    res.status(result.statusCode).json(result.body);
+  });
+
+  // GET /incidents (Phase 6 List Incidents with optional limit and run_id query)
+  application.get('/incidents', async (req: Request, res: Response) => {
+    const limit = typeof req.query.limit === 'string' ? req.query.limit : undefined;
+    const runId = typeof req.query.run_id === 'string' ? req.query.run_id : undefined;
+    const result = await controller.listIncidents(limit, runId);
+    res.status(result.statusCode).json(result.body);
+  });
+
+  // POST /incidents (Phase 6 Detector Platform Ingestion Boundary)
+  application.post('/incidents', async (req: Request, res: Response) => {
+    const result = await controller.createIncident(req.body);
+    res.status(result.statusCode).json(result.body);
+  });
+
+  // POST /incidents/:incident_id/rca (Phase 6 RCA Boundary)
+  application.post('/incidents/:incident_id/rca', async (req: Request, res: Response) => {
+    const incidentId = Array.isArray(req.params.incident_id) ? req.params.incident_id[0] : req.params.incident_id;
+    const result = await controller.updateIncidentRca(incidentId, req.body);
     res.status(result.statusCode).json(result.body);
   });
 

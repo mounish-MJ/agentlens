@@ -4,6 +4,8 @@ import type {
   Run,
   CreateRunRequest,
   Incident,
+  CreateIncidentRequest,
+  UpdateIncidentRcaRequest,
   HealthCheckResponse,
   TelemetryEvent,
   TelemetryIngestionResult,
@@ -16,6 +18,13 @@ import {
   TelemetryValidationError,
   RunNotFoundError,
 } from '../services/telemetry-service.js';
+import {
+  type IIncidentService,
+  IncidentService,
+  IncidentValidationError,
+  IncidentNotFoundError,
+  RcaServiceUnavailableError,
+} from '../services/incident-service.js';
 
 export interface ControllerResponse<T = unknown> {
   statusCode: number;
@@ -32,12 +41,15 @@ const COMMON_HEADERS: Record<string, string> = {
 
 export class ApiController {
   private readonly telemetryService: ITelemetryService;
+  private readonly incidentService: IIncidentService;
 
   constructor(
     private readonly repo: IAgentLensRepository,
-    customTelemetryService?: ITelemetryService
+    customTelemetryService?: ITelemetryService,
+    customIncidentService?: IIncidentService
   ) {
     this.telemetryService = customTelemetryService || new TelemetryService(this.repo);
+    this.incidentService = customIncidentService || new IncidentService(this.repo);
   }
 
   // ==========================================
@@ -295,11 +307,48 @@ export class ApiController {
   // ==========================================
   // GET /incidents
   // ==========================================
-  async listIncidents(): Promise<ControllerResponse<Incident[]>> {
+  async listIncidents(limitStr?: string, runIdStr?: string): Promise<ControllerResponse<Incident[]>> {
     const now = new Date().toISOString();
+    let limit: number | undefined = undefined;
+
+    if (limitStr !== undefined && limitStr !== null && limitStr !== '') {
+      const trimmed = limitStr.trim();
+      if (!/^\d+$/.test(trimmed)) {
+        return {
+          statusCode: 400,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: 'Query parameter "limit" must be a positive integer between 1 and 100.',
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      limit = parseInt(trimmed, 10);
+      if (limit <= 0 || limit > 100) {
+        return {
+          statusCode: 400,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: 'Query parameter "limit" must be a positive integer between 1 and 100.',
+            },
+            timestamp: now,
+          },
+        };
+      }
+    }
+
+    const cleanRunId = runIdStr && typeof runIdStr === 'string' ? runIdStr.trim() : undefined;
 
     try {
-      const incidents = await this.repo.listIncidents();
+      const incidents = await this.incidentService.listIncidents(limit, cleanRunId);
 
       return {
         statusCode: 200,
@@ -349,7 +398,7 @@ export class ApiController {
     }
 
     try {
-      const incident = await this.repo.getIncident(incident_id.trim());
+      const incident = await this.incidentService.getIncident(incident_id.trim());
 
       if (!incident) {
         return {
@@ -376,6 +425,21 @@ export class ApiController {
         },
       };
     } catch (err: unknown) {
+      if (err instanceof IncidentValidationError) {
+        return {
+          statusCode: 400,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
       console.error(`[ApiController] Error retrieving Incident ${incident_id}:`, err);
       return {
         statusCode: 500,
@@ -390,6 +454,213 @@ export class ApiController {
         },
       };
     }
+  }
+
+  // ==========================================
+  // POST /incidents
+  // ==========================================
+  async createIncident(rawBody: unknown): Promise<ControllerResponse<Incident>> {
+    const now = new Date().toISOString();
+
+    if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'BAD_REQUEST',
+            message: 'Request body must be a valid JSON object.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    try {
+      const created = await this.incidentService.createIncident(rawBody as CreateIncidentRequest);
+      return {
+        statusCode: 201,
+        headers: COMMON_HEADERS,
+        body: {
+          success: true,
+          data: created,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    } catch (err: unknown) {
+      if (err instanceof RunNotFoundError) {
+        return {
+          statusCode: 404,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'NOT_FOUND',
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      if (err instanceof IncidentValidationError) {
+        return {
+          statusCode: 400,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: err.code || 'VALIDATION_ERROR',
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      console.error('[ApiController] Error creating Incident:', err);
+      return {
+        statusCode: 500,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to persist Incident in data store.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+  }
+
+  // ==========================================
+  // POST /incidents/:incident_id/rca
+  // ==========================================
+  async updateIncidentRca(
+    incident_id?: string,
+    rawBody?: unknown
+  ): Promise<ControllerResponse<Incident>> {
+    const now = new Date().toISOString();
+
+    if (!incident_id || typeof incident_id !== 'string' || incident_id.trim().length === 0) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Parameter "incident_id" is required.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    const payload = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)
+      ? (rawBody as UpdateIncidentRcaRequest)
+      : ({} as UpdateIncidentRcaRequest);
+
+    try {
+      const updated = await this.incidentService.updateIncidentRca(incident_id.trim(), payload);
+      return {
+        statusCode: 200,
+        headers: COMMON_HEADERS,
+        body: {
+          success: true,
+          data: updated,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    } catch (err: unknown) {
+      if (err instanceof IncidentNotFoundError) {
+        return {
+          statusCode: 404,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: 'NOT_FOUND',
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      if (err instanceof RcaServiceUnavailableError) {
+        return {
+          statusCode: 501,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: err.code,
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      if (err instanceof IncidentValidationError) {
+        return {
+          statusCode: 400,
+          headers: COMMON_HEADERS,
+          body: {
+            success: false,
+            error: {
+              code: err.code || 'VALIDATION_ERROR',
+              message: err.message,
+            },
+            timestamp: now,
+          },
+        };
+      }
+
+      console.error(`[ApiController] Error updating RCA for Incident ${incident_id}:`, err);
+      return {
+        statusCode: 500,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to update Incident RCA in data store.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+  }
+
+  // ==========================================
+  // GET /runs/:run_id/incidents
+  // ==========================================
+  async listIncidentsByRun(
+    run_id?: string,
+    limitStr?: string
+  ): Promise<ControllerResponse<Incident[]>> {
+    const now = new Date().toISOString();
+
+    if (!run_id || typeof run_id !== 'string' || run_id.trim().length === 0) {
+      return {
+        statusCode: 400,
+        headers: COMMON_HEADERS,
+        body: {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Parameter "run_id" is required.',
+          },
+          timestamp: now,
+        },
+      };
+    }
+
+    return this.listIncidents(limitStr, run_id);
   }
 
   // ==========================================

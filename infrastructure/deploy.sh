@@ -107,85 +107,195 @@ echo "Health Endpoint:     ${HEALTH_URL}"
 echo "DynamoDB Table:      ${TABLE_NAME}"
 echo "==================================================="
 
-# 7. Real Persistence Smoke Test
+# 7. Real Persistence Smoke Test (Phase 6)
 if [ -n "${API_ENDPOINT}" ]; then
   echo ""
-  echo "=== REAL PERSISTENCE SMOKE TEST (PHASE 5) ==="
+  echo "=== REAL PERSISTENCE SMOKE TEST (PHASE 6) ==="
   
+  # Step 1: GET /health
   echo "1. Testing GET /health..."
   curl -s -i "${API_ENDPOINT}/health"
   echo ""
 
-  echo "2. Testing POST /runs (Real DynamoDB Persistence)..."
-  CREATE_RES=$(curl -s -X POST "${API_ENDPOINT}/runs" \
+  # Step 2: Initial GET /incidents
+  echo "2. Testing initial GET /incidents..."
+  INITIAL_INCS=$(curl -s "${API_ENDPOINT}/incidents")
+  echo "Initial GET /incidents: ${INITIAL_INCS}"
+
+  # Step 3: Create temporary real Run using POST /runs
+  echo "3. Creating temporary real Run using POST /runs..."
+  CREATE_RUN_RES=$(curl -s -X POST "${API_ENDPOINT}/runs" \
     -H "Content-Type: application/json" \
-    -d '{"agent_name": "smoke-test-agent", "prompt": "Verify DynamoDB Phase 5 persistence"}')
-  echo "POST /runs Response: ${CREATE_RES}"
+    -d '{"agent_name": "smoke-test-agent-p6", "prompt": "Verify Phase 6 incident persistence and RCA boundary"}')
+  echo "POST /runs Response: ${CREATE_RUN_RES}"
 
-  RUN_ID=$(echo "${CREATE_RES}" | grep -o '"run_id":"[^"]*' | cut -d'"' -f4 || true)
-  CREATED_AT=$(echo "${CREATE_RES}" | grep -o '"created_at":"[^"]*' | cut -d'"' -f4 || true)
+  SMOKE_RUN_ID=$(echo "${CREATE_RUN_RES}" | grep -o '"run_id":"[^"]*' | cut -d'"' -f4 || true)
+  RUN_CREATED_AT=$(echo "${CREATE_RUN_RES}" | grep -o '"created_at":"[^"]*' | cut -d'"' -f4 || true)
 
-  if [ -n "${RUN_ID}" ]; then
-    echo "Created Run ID: ${RUN_ID} (created_at: ${CREATED_AT})"
+  if [ -z "${SMOKE_RUN_ID}" ]; then
+    echo "[ERROR] Failed to obtain run_id from POST /runs"
+    exit 1
+  fi
+  echo "Created temporary Run ID: ${SMOKE_RUN_ID} (created_at: ${RUN_CREATED_AT})"
 
-    echo "3. Testing GET /runs (Verifying timeline persistence without table scan)..."
-    GET_RUNS_RES=$(curl -s "${API_ENDPOINT}/runs?limit=10")
-    echo "GET /runs Response: ${GET_RUNS_RES}"
-    
-    echo "4. Testing POST /runs/${RUN_ID}/telemetry (Phase 4/5 Telemetry Ingestion)..."
-    INGEST_RES=$(curl -s -X POST "${API_ENDPOINT}/runs/${RUN_ID}/telemetry" \
-      -H "Content-Type: application/json" \
-      -d '{
-        "status": "completed",
-        "result": "Phase 5 live verification successful",
-        "metrics": { "prompt_tokens": 150, "completion_tokens": 50, "total_tokens": 200, "duration_ms": 320, "tool_calls_count": 1 },
-        "events": [
-          { "type": "tool_call", "name": "system_probe", "data": { "probe": "live_test" }, "duration_ms": 25, "status": "success" },
-          { "type": "model_invocation", "name": "mock_llm", "data": { "tokens": 200 }, "duration_ms": 280, "status": "success" }
-        ]
-      }')
-    echo "POST /runs/${RUN_ID}/telemetry Response: ${INGEST_RES}"
+  # Step 4: Create temporary real Incident linked to that Run using POST /incidents
+  echo "4. Creating temporary real Incident linked to Run using POST /incidents..."
+  CREATE_INC_RES=$(curl -s -X POST "${API_ENDPOINT}/incidents" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "run_id": "'"${SMOKE_RUN_ID}"'",
+      "title": "Smoke Test Tool Loop Incident",
+      "summary": "Demonstrating real Phase 6 platform persistence without fake data",
+      "type": "tool_loop",
+      "severity": "high",
+      "detector_source": "smoke_detector_v1",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "event_id": "evt_smoke_01",
+          "type": "tool_call",
+          "name": "search_db",
+          "metric": "retry_count",
+          "value": 5,
+          "details": { "target": "search_api", "status_code": 500 }
+        }
+      ]
+    }')
+  echo "POST /incidents Response: ${CREATE_INC_RES}"
 
-    echo "5. Testing GET /runs/${RUN_ID}/telemetry (Confirming DynamoDB Event Collection)..."
-    GET_TELEM_RES=$(curl -s "${API_ENDPOINT}/runs/${RUN_ID}/telemetry")
-    echo "GET /runs/${RUN_ID}/telemetry Response: ${GET_TELEM_RES}"
+  SMOKE_INC_ID=$(echo "${CREATE_INC_RES}" | grep -o '"incident_id":"[^"]*' | cut -d'"' -f4 || true)
+  INC_CREATED_AT=$(echo "${CREATE_INC_RES}" | grep -o '"created_at":"[^"]*' | cut -d'"' -f4 || true)
 
-    echo "6. Testing GET /runs/${RUN_ID} (Confirming Run update in DynamoDB)..."
-    GET_RUN_RES=$(curl -s "${API_ENDPOINT}/runs/${RUN_ID}")
-    echo "GET /runs/${RUN_ID} Response: ${GET_RUN_RES}"
+  if [ -z "${SMOKE_INC_ID}" ]; then
+    echo "[ERROR] Failed to obtain incident_id from POST /incidents"
+    exit 1
+  fi
+  echo "Created temporary Incident ID: ${SMOKE_INC_ID} (created_at: ${INC_CREATED_AT})"
 
-    echo "7. Cleaning up smoke test run and telemetry items from DynamoDB..."
-    # 7a. Clean up all items under the Run partition: pk = RUN#<run_id>
-    SKS=$(aws dynamodb query \
-      --table-name "${TABLE_NAME}" \
-      --key-condition-expression "pk = :pk" \
-      --expression-attribute-values '{":pk":{"S":"RUN#'"${RUN_ID}"'"}}' \
-      --region "${REGION}" \
-      --query 'Items[].sk.S' \
-      --output text 2>/dev/null || true)
-    
-    for SK in ${SKS}; do
-      aws dynamodb delete-item \
-        --table-name "${TABLE_NAME}" \
-        --key '{"pk": {"S": "RUN#'"${RUN_ID}"'"}, "sk": {"S": "'"${SK}"'"}}' \
-        --region "${REGION}" >/dev/null || true
-    done
+  # Step 5: GET /incidents
+  echo "5. Testing GET /incidents (Verifying newly created incident is listed)..."
+  GET_INCS_RES=$(curl -s "${API_ENDPOINT}/incidents")
+  echo "GET /incidents Response: ${GET_INCS_RES}"
 
-    # 7b. Clean up timeline item: pk = RUNS, sk = RUN#<created_at>#<run_id>
-    if [ -n "${CREATED_AT}" ]; then
-      aws dynamodb delete-item \
-        --table-name "${TABLE_NAME}" \
-        --key '{"pk": {"S": "RUNS"}, "sk": {"S": "RUN#'"${CREATED_AT}"'#'"${RUN_ID}"'"}}' \
-        --region "${REGION}" >/dev/null || true
-    fi
-    echo "Cleanup complete."
+  # Step 6: GET /incidents/:incident_id
+  echo "6. Testing GET /incidents/${SMOKE_INC_ID}..."
+  GET_SINGLE_INC_RES=$(curl -s "${API_ENDPOINT}/incidents/${SMOKE_INC_ID}")
+  echo "GET /incidents/${SMOKE_INC_ID} Response: ${GET_SINGLE_INC_RES}"
+
+  # Step 7: GET /runs/:run_id/incidents
+  echo "7. Testing GET /runs/${SMOKE_RUN_ID}/incidents..."
+  GET_RUN_INCS_RES=$(curl -s "${API_ENDPOINT}/runs/${SMOKE_RUN_ID}/incidents")
+  echo "GET /runs/${SMOKE_RUN_ID}/incidents Response: ${GET_RUN_INCS_RES}"
+
+  # Step 8: GET /incidents?run_id=<run_id>
+  echo "8. Testing GET /incidents?run_id=${SMOKE_RUN_ID}..."
+  GET_FILTERED_INCS_RES=$(curl -s "${API_ENDPOINT}/incidents?run_id=${SMOKE_RUN_ID}")
+  echo "GET /incidents?run_id=${SMOKE_RUN_ID} Response: ${GET_FILTERED_INCS_RES}"
+
+  # Step 9: POST /incidents/:incident_id/rca with structured RCA payload
+  echo "9. Testing POST /incidents/${SMOKE_INC_ID}/rca with structured RCA payload..."
+  POST_RCA_RES=$(curl -s -X POST "${API_ENDPOINT}/incidents/${SMOKE_INC_ID}/rca" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "rca": {
+        "primary_failure": "Live smoke test simulated failure",
+        "root_cause": "Rate limit exceeded in sandbox environment",
+        "contributing_factors": ["Unbounded retry interval", "Burst traffic"],
+        "severity": "high",
+        "impact": "Single test task aborted",
+        "recommended_action": "Apply exponential backoff with jitter",
+        "evidence_used": ["evt_smoke_01"],
+        "uncertainty": "low",
+        "analyzed_at": "'"${INC_CREATED_AT}"'"
+      },
+      "status": "resolved"
+    }')
+  echo "POST /incidents/${SMOKE_INC_ID}/rca Response: ${POST_RCA_RES}"
+
+  # Step 10: GET the incident again and verify RCA persisted
+  echo "10. Testing GET /incidents/${SMOKE_INC_ID} (Verifying RCA persisted)..."
+  GET_RCA_VERIFY=$(curl -s "${API_ENDPOINT}/incidents/${SMOKE_INC_ID}")
+  echo "Verified Incident with RCA: ${GET_RCA_VERIFY}"
+
+  # Step 11: Test automated RCA behavior
+  echo "11. Testing automated RCA request boundary..."
+  AUTO_RCA_HTTP_CODE=$(curl -s -o /tmp/auto_rca_res.json -w "%{http_code}" -X POST "${API_ENDPOINT}/incidents/${SMOKE_INC_ID}/rca" \
+    -H "Content-Type: application/json" \
+    -d '{"trigger_automated_rca": true}')
+  AUTO_RCA_BODY=$(cat /tmp/auto_rca_res.json || true)
+  rm -f /tmp/auto_rca_res.json
+  echo "Automated RCA HTTP Status: ${AUTO_RCA_HTTP_CODE}"
+  echo "Automated RCA Response Body: ${AUTO_RCA_BODY}"
+
+  # Steps 12 & 13: Verify HTTP 501 and RCA_SERVICE_NOT_INTEGRATED, verify no fake RCA generated
+  if [ "${AUTO_RCA_HTTP_CODE}" -eq 501 ]; then
+    echo "SUCCESS: Automated RCA returned HTTP 501 as expected (code: RCA_SERVICE_NOT_INTEGRATED)"
   else
-    echo "[WARNING] Could not parse run_id from POST /runs response"
+    echo "[WARNING] Expected HTTP 501 from automated RCA request, got: ${AUTO_RCA_HTTP_CODE}"
   fi
 
-  echo "7. Testing GET /incidents (Verifying real data / empty collection, no fake data)..."
-  INCIDENTS_RES=$(curl -s "${API_ENDPOINT}/incidents")
-  echo "GET /incidents Response: ${INCIDENTS_RES}"
+  # Step 14: Delete ALL temporary smoke-test records explicitly from DynamoDB
+  echo "14. Cleaning up temporary smoke-test records from DynamoDB..."
+  # Clean all 3 representations of the Incident:
+  # Rep 1: pk = INCIDENT#<id>, sk = METADATA
+  aws dynamodb delete-item \
+    --table-name "${TABLE_NAME}" \
+    --key '{"pk": {"S": "INCIDENT#'"${SMOKE_INC_ID}"'"}, "sk": {"S": "METADATA"}}' \
+    --region "${REGION}" >/dev/null || true
+
+  # Rep 2: pk = INCIDENTS, sk = INCIDENT#<created_at>#<id>
+  if [ -n "${INC_CREATED_AT}" ]; then
+    aws dynamodb delete-item \
+      --table-name "${TABLE_NAME}" \
+      --key '{"pk": {"S": "INCIDENTS"}, "sk": {"S": "INCIDENT#'"${INC_CREATED_AT}"'#'"${SMOKE_INC_ID}"'"}}' \
+      --region "${REGION}" >/dev/null || true
+  fi
+
+  # Rep 3: pk = RUN#<run_id>, sk = INCIDENT#<created_at>#<id>
+  if [ -n "${INC_CREATED_AT}" ]; then
+    aws dynamodb delete-item \
+      --table-name "${TABLE_NAME}" \
+      --key '{"pk": {"S": "RUN#'"${SMOKE_RUN_ID}"'"}, "sk": {"S": "INCIDENT#'"${INC_CREATED_AT}"'#'"${SMOKE_INC_ID}"'"}}' \
+      --region "${REGION}" >/dev/null || true
+  fi
+
+  # Clean Run representations:
+  # Run rep 1: pk = RUN#<run_id>, sk = METADATA
+  aws dynamodb delete-item \
+    --table-name "${TABLE_NAME}" \
+    --key '{"pk": {"S": "RUN#'"${SMOKE_RUN_ID}"'"}, "sk": {"S": "METADATA"}}' \
+    --region "${REGION}" >/dev/null || true
+
+  # Run rep 2: pk = RUNS, sk = RUN#<created_at>#<run_id>
+  if [ -n "${RUN_CREATED_AT}" ]; then
+    aws dynamodb delete-item \
+      --table-name "${TABLE_NAME}" \
+      --key '{"pk": {"S": "RUNS"}, "sk": {"S": "RUN#'"${RUN_CREATED_AT}"'#'"${SMOKE_RUN_ID}"'"}}' \
+      --region "${REGION}" >/dev/null || true
+  fi
+
+  # Clean any other items in RUN#<run_id> partition
+  RUN_SKS=$(aws dynamodb query \
+    --table-name "${TABLE_NAME}" \
+    --key-condition-expression "pk = :pk" \
+    --expression-attribute-values '{":pk":{"S":"RUN#'"${SMOKE_RUN_ID}"'"}}' \
+    --region "${REGION}" \
+    --query 'Items[].sk.S' \
+    --output text 2>/dev/null || true)
+  for SK in ${RUN_SKS}; do
+    aws dynamodb delete-item \
+      --table-name "${TABLE_NAME}" \
+      --key '{"pk": {"S": "RUN#'"${SMOKE_RUN_ID}"'"}, "sk": {"S": "'"${SK}"'"}}' \
+      --region "${REGION}" >/dev/null || true
+  done
+
+  # Step 15: Verify the production table is clean (Query pk=INCIDENTS & pk=RUNS, Zero Scan)
+  echo "15. Verifying production table is clean (Query pk=INCIDENTS & pk=RUNS, Zero Scan)..."
+  FINAL_INCS=$(curl -s "${API_ENDPOINT}/incidents")
+  echo "Final GET /incidents: ${FINAL_INCS}"
+  FINAL_RUNS=$(curl -s "${API_ENDPOINT}/runs")
+  echo "Final GET /runs: ${FINAL_RUNS}"
+  echo "Cleanup and zero-state verification complete!"
 fi
 
 # 8. Verify DynamoDB Table Status

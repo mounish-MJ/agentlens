@@ -8,6 +8,8 @@ import type {
   Run,
   RunStatus,
   Incident,
+  IncidentRcaResult,
+  IncidentStatus,
   RegressionTest,
   Evaluation,
   ReplayRecord,
@@ -97,6 +99,33 @@ class MockAgentLensRepository implements IAgentLensRepository {
     return Array.from(this.incidents.values()).sort(
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
+  }
+
+  async listIncidentsByRun(run_id: string, limit = 50): Promise<Incident[]> {
+    return Array.from(this.incidents.values())
+      .filter((inc) => inc.run_id === run_id)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, limit);
+  }
+
+  async updateIncidentRca(
+    incident_id: string,
+    updates: {
+      rca?: IncidentRcaResult;
+      status?: IncidentStatus;
+      updated_at: string;
+    }
+  ): Promise<Incident | null> {
+    const existing = this.incidents.get(incident_id);
+    if (!existing) return null;
+    const updated: Incident = {
+      ...existing,
+      ...(updates.rca !== undefined ? { rca: updates.rca } : {}),
+      ...(updates.status !== undefined ? { status: updates.status } : {}),
+      updated_at: updates.updated_at,
+    };
+    this.incidents.set(incident_id, updated);
+    return updated;
   }
 
   async createRegressionTest(test: RegressionTest): Promise<RegressionTest> {

@@ -43,26 +43,45 @@ agentlens/
 - **Amazon DynamoDB**: Single-table persistence (`agentlens-data-dev`) implementing deterministic `pk`/`sk` patterns for all canonical entities without scans or secondary indexes.
 - **IAM**: Least-privilege role restricted strictly to CloudWatch log creation and DynamoDB operations on the application table.
 
-### Implemented Endpoints (Phase 3, Phase 4 & Phase 5)
+### Implemented Endpoints (Phase 3, Phase 4, Phase 5 & Phase 6)
 - `GET /health` — Runtime health check probe
-- `POST /runs` — Validate and create agent run in DynamoDB (writes primary & timeline items)
+- `POST /runs` — Validate and create agent run in DynamoDB (writes primary & timeline items atomically)
 - `GET /runs?limit={n}` — List chronological agent runs (newest first, zero table scan)
 - `GET /runs/{run_id}` — Get Run by ID (includes status, execution metrics, and events count)
 - `POST /runs/{run_id}/telemetry` — Ingest telemetry events (tool calls, model invocations, logs, metrics) and update Run status
 - `GET /runs/{run_id}/telemetry` — Retrieve chronological execution telemetry events for a Run
-- `GET /incidents` — List chronological incidents (empty collection when none exist)
+- `GET /incidents` — List chronological incidents (supports optional `run_id` filter and bounded limit)
+- `POST /incidents` — Validate and persist canonical incident (atomically writes all 3 representations)
 - `GET /incidents/{incident_id}` — Get Incident by ID
+- `POST /incidents/{incident_id}/rca` — RCA integration boundary: persists structured RCA payload, or returns HTTP 501 `RCA_SERVICE_NOT_INTEGRATED` on automated trigger
+- `GET /runs/{run_id}/incidents` — List all incidents associated with a specific agent Run (zero table scan)
 
 ---
 
-## AgentLens UI Dashboard (Phase 5)
+## AgentLens UI & Incident Investigation (Phase 6)
 
-The React web application provides a real-time observability platform connected directly to the serverless backend:
-- **Overview**: High-level execution stats (total runs, completed, active), incident counts, recent runs, and honest empty states.
+The React web application provides an enterprise-grade observability and diagnosis platform connected directly to the serverless backend:
+- **Overview**: High-level execution stats (total runs, completed, active), incident counts, recent runs, and honest empty states ("Zero Incidents Detected").
 - **Runs List**: Filterable and searchable table of all persisted agent executions with token metrics and event counts.
-- **Run Detail (`/runs/:run_id`)**: Detailed execution view with token usage cards, duration metrics, tool call counts, and a full chronological telemetry timeline with expandable JSON payloads.
-- **Incidents**: Real-time listing of detected anomalies from `GET /incidents` with severity and status indicators.
+- **Run Detail (`#runs/:run_id`)**: Detailed execution view with token usage cards, duration metrics, tool call counts, full chronological telemetry timeline with expandable JSON payloads, and an **Associated Incidents** panel with deep click-through.
+- **Incidents View (`#incidents` / `#incidents/:incident_id`)**:
+  - Filter by severity (`critical`, `high`, `medium`, `low`), status (`open`, `investigating`, `resolved`), or search query.
+  - Deep-linkable Incident Detail view showing:
+    1. Incident summary & classification
+    2. Associated Run banner with bidirectional link to Run Detail
+    3. **Observed Execution Evidence**: Distinct section presenting verified telemetry events, metrics, tool names, and expandable raw payloads without synthetic interpretations.
+    4. **Root Cause Analysis (RCA)**: Explicit structured RCA findings when supplied, or an honest `"RCA Not Available"` banner.
+  - **No Fake Data Guarantee**: Zero synthetic incidents, fake metrics, or fabricated Bedrock explanations. When 0 incidents exist, displays "Zero Incidents Detected".
+- **Bidirectional Navigation**: Fluid cross-linking: Runs → Run Detail → Associated Incident → Incident Detail → Associated Run.
 - **Amplify Ready**: Includes `amplify.yml` for automated CI/CD frontend deployment on AWS Amplify.
+
+---
+
+## Platform Ownership Boundary (Member 4 vs Member 2)
+
+- **Member 4 (THIS REPOSITORY)**: Owns platform foundation, single-table DynamoDB persistence, API endpoints, incident data contracts, observable evidence presentation, bidirectional investigation UI, and the RCA request/persistence boundary.
+- **Member 2**: Owns deterministic detectors (tool-loop, token anomaly, retrieval failure, wrong-tool), detector scoring and correlation, incident-generation semantics, and Bedrock RCA reasoning.
+- **Boundary Contract**: When an automated RCA request is received (`trigger_automated_rca: true` or empty payload), Member 4 returns HTTP 501 (`RCA_SERVICE_NOT_INTEGRATED`). No fake RCA or simulated Bedrock analysis is ever generated.
 
 ---
 

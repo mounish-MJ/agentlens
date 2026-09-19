@@ -118,6 +118,34 @@ export type IncidentType =
   | 'runtime_error'
   | string;
 
+export interface IncidentEvidenceItem {
+  event_id?: string;
+  timestamp?: string;
+  type?: string;
+  name?: string;
+  details?: Record<string, unknown>;
+  metric?: string;
+  value?: unknown;
+}
+
+export interface IncidentRcaResult {
+  primary_failure: string;
+  root_cause: string;
+  contributing_factors?: string[];
+  severity?: IncidentSeverity;
+  impact?: string;
+  recommended_action?: string;
+  evidence_used?: string[];
+  uncertainty?: string | number;
+  analyzed_at: string;
+}
+
+export interface UpdateIncidentRcaRequest {
+  rca?: IncidentRcaResult;
+  status?: IncidentStatus;
+  trigger_automated_rca?: boolean;
+}
+
 export interface Incident {
   incident_id: string;
   run_id: string;
@@ -126,6 +154,10 @@ export interface Incident {
   status: IncidentStatus;
   type: IncidentType;
   summary?: string;
+  detector_source?: string;
+  confidence?: number;
+  evidence?: IncidentEvidenceItem[];
+  rca?: IncidentRcaResult;
   created_at: string;
   updated_at: string;
 }
@@ -137,6 +169,10 @@ export interface CreateIncidentRequest {
   type: IncidentType;
   summary?: string;
   status?: IncidentStatus;
+  detector_source?: string;
+  confidence?: number;
+  evidence?: IncidentEvidenceItem[];
+  incident_id?: string;
 }
 
 // ==========================================

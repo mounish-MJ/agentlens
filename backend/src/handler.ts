@@ -138,7 +138,20 @@ export function createHandler(customRepo?: IAgentLensRepository) {
       }
     }
 
-    // 4. GET /runs/{run_id}
+    // 4. GET /runs/{run_id}/incidents (Phase 6 Run-Incident Association)
+    const runIncidentsMatch = normalizedPath.match(/^\/runs\/([^/]+)\/incidents$/);
+    if (method === 'GET' && runIncidentsMatch) {
+      const run_id = runIncidentsMatch[1];
+      const limit = 'queryStringParameters' in event ? event.queryStringParameters?.limit : undefined;
+      const result = await controller.listIncidentsByRun(run_id, limit);
+      return {
+        statusCode: result.statusCode,
+        headers: result.headers,
+        body: JSON.stringify(result.body),
+      };
+    }
+
+    // 5. GET /runs/{run_id}
     const runMatch = normalizedPath.match(/^\/runs\/([^/]+)$/);
     if (method === 'GET' && runMatch) {
       const run_id = runMatch[1];
@@ -150,9 +163,33 @@ export function createHandler(customRepo?: IAgentLensRepository) {
       };
     }
 
-    // 4. GET /incidents
-    if (method === 'GET' && normalizedPath === '/incidents') {
-      const result = await controller.listIncidents();
+    // 6. POST /incidents & GET /incidents (Phase 6 Incidents Platform Boundary)
+    if (normalizedPath === '/incidents') {
+      if (method === 'POST') {
+        const result = await controller.createIncident(parsedBody);
+        return {
+          statusCode: result.statusCode,
+          headers: result.headers,
+          body: JSON.stringify(result.body),
+        };
+      }
+      if (method === 'GET') {
+        const limit = 'queryStringParameters' in event ? event.queryStringParameters?.limit : undefined;
+        const run_id = 'queryStringParameters' in event ? event.queryStringParameters?.run_id : undefined;
+        const result = await controller.listIncidents(limit, run_id);
+        return {
+          statusCode: result.statusCode,
+          headers: result.headers,
+          body: JSON.stringify(result.body),
+        };
+      }
+    }
+
+    // 7. POST /incidents/{incident_id}/rca (Phase 6 RCA Boundary)
+    const rcaMatch = normalizedPath.match(/^\/incidents\/([^/]+)\/rca$/);
+    if (method === 'POST' && rcaMatch) {
+      const incident_id = rcaMatch[1];
+      const result = await controller.updateIncidentRca(incident_id, parsedBody);
       return {
         statusCode: result.statusCode,
         headers: result.headers,
@@ -160,9 +197,10 @@ export function createHandler(customRepo?: IAgentLensRepository) {
       };
     }
 
-    // 5. GET /incidents/{incident_id}
-    if (method === 'GET' && normalizedPath.startsWith('/incidents/')) {
-      const incident_id = normalizedPath.slice('/incidents/'.length);
+    // 8. GET /incidents/{incident_id}
+    const incidentMatch = normalizedPath.match(/^\/incidents\/([^/]+)$/);
+    if (method === 'GET' && incidentMatch) {
+      const incident_id = incidentMatch[1];
       const result = await controller.getIncident(incident_id);
       return {
         statusCode: result.statusCode,

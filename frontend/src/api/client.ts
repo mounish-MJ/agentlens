@@ -7,6 +7,8 @@ import type {
   IngestTelemetryRequest,
   TelemetryIngestionResult,
   Incident,
+  CreateIncidentRequest,
+  UpdateIncidentRcaRequest,
 } from '../types/contracts.js';
 
 export class ApiClientError extends Error {
@@ -120,12 +122,38 @@ class AgentLensApiClient {
     });
   }
 
-  async getIncidents(): Promise<Incident[]> {
-    return this.request<Incident[]>('/incidents');
+  async getIncidents(limit?: number, run_id?: string): Promise<Incident[]> {
+    const params = new URLSearchParams();
+    if (limit) params.set('limit', String(limit));
+    if (run_id) params.set('run_id', run_id);
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return this.request<Incident[]>(`/incidents${query}`);
   }
 
   async getIncident(incident_id: string): Promise<Incident> {
     return this.request<Incident>(`/incidents/${encodeURIComponent(incident_id)}`);
+  }
+
+  async getIncidentsByRun(run_id: string, limit?: number): Promise<Incident[]> {
+    const query = limit ? `?limit=${encodeURIComponent(limit)}` : '';
+    return this.request<Incident[]>(`/runs/${encodeURIComponent(run_id)}/incidents${query}`);
+  }
+
+  async createIncident(payload: CreateIncidentRequest): Promise<Incident> {
+    return this.request<Incident>('/incidents', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateIncidentRca(
+    incident_id: string,
+    payload: UpdateIncidentRcaRequest
+  ): Promise<Incident> {
+    return this.request<Incident>(`/incidents/${encodeURIComponent(incident_id)}/rca`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 }
 

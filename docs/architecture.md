@@ -37,43 +37,47 @@ Agent Execution (Member 1)
 
 ---
 
-## Phase 5: Platform UI & Zero-Scan DynamoDB Persistence
+## Phase 6: Incident & Diagnosis Platform Foundation
 
-### 1. Ingestion Boundary & Telemetry Contract
-Incoming telemetry records real execution observability from agent workflows into DynamoDB:
-- **Canonical Event Types**: Strictly validated to `tool_call`, `model_invocation`, `state_change`, `log`, `metric`. Unknown types are rejected with HTTP 400 (`VALIDATION_ERROR`).
-- **Generated Event IDs**: Each event receives a unique identifier (`evt_<uuid>`) to guarantee collision-free writes across concurrent agent execution workers.
-- **Bounded Run Updates**: Ingestion updates `status`, `result`, `error`, `metrics`, and increments `events_count`. It **never** fabricates incidents or domain algorithm findings (Member 4 boundary).
+### 1. Architectural Scope & Boundary
+Phase 6 establishes the persistence and API boundary for real reliability incidents, observable execution evidence, and root cause analysis (RCA):
+- **Member 4 Ownership**: Platform boundary, DynamoDB persistence, API endpoints, observable evidence presentation, bidirectional investigation UI, and RCA request boundary.
+- **Member 2 Ownership**: Deterministic detectors (tool-loop, token anomaly, retrieval failure, wrong-tool), detector scoring, detector correlation, incident-generation semantics, and Bedrock RCA reasoning.
+- **Strict Separation of Evidence vs Interpretation**: Execution evidence (tool name, event ID, latency, raw parameters) is stored and presented separately from subjective or LLM-generated root cause analysis.
 
-### 2. DynamoDB Single-Table Key Strategy
+### 2. DynamoDB Single-Table Key Strategy (Zero Scans, Zero GSIs)
 
 - **Table**: `agentlens-data-{env}`
-- **Partition Key (`pk`)**: String
-- **Sort Key (`sk`)**: String
 - **Capacity**: `PAY_PER_REQUEST` (On-Demand)
+- **Zero Scan Guarantee**: All application queries are bounded `QueryCommand` or `GetCommand` calls targeting known partition keys.
 
-#### Key Mappings:
-| Entity | Partition Key (`pk`) | Sort Key (`sk`) | Access Pattern |
-|---|---|---|---|
-| `Run (Metadata)` | `RUN#<run_id>` | `METADATA` | `GetItem(pk=RUN#<id>, sk=METADATA)` (O(1)) |
-| `Runs (Timeline)` | `RUNS` | `RUN#<created_at>#<run_id>` | `Query(pk=RUNS, ScanIndexForward=false)` (O(k)) |
-| `Run Telemetry Events` | `RUN#<run_id>` | `EVENT#<timestamp>#<event_id>` | `Query(pk=RUN#<id>, begins_with(sk, 'EVENT#'))` (O(k)) |
-| `Incident (Primary)` | `INCIDENT#<incident_id>` | `METADATA` | `GetItem(pk=INCIDENT#<id>, sk=METADATA)` (O(1)) |
-| `Incidents (Timeline)` | `INCIDENTS` | `INCIDENT#<created_at>#<id>` | `Query(pk=INCIDENTS, ScanIndexForward=false)` (O(k)) |
-| `RegressionTest` | `TEST#<test_id>` | `METADATA` | `GetItem(pk=TEST#<id>, sk=METADATA)` (O(1)) |
-| `Evaluation` | `EVAL#<evaluation_id>` | `METADATA` | `GetItem(pk=EVAL#<id>, sk=METADATA)` (O(1)) |
-| `ReplayRecord` | `REPLAY#<replay_id>` | `METADATA` | `GetItem(pk=REPLAY#<id>, sk=METADATA)` (O(1)) |
+#### Key Mappings Matrix:
+| Entity / Pattern | Partition Key (`pk`) | Sort Key (`sk`) | Description | Query Access Pattern |
+|---|---|---|---|---|
+| `Run (Metadata)` | `RUN#<run_id>` | `METADATA` | Primary execution record | `GetItem(pk=RUN#<id>, sk=METADATA)` (O(1)) |
+| `Runs (Timeline)` | `RUNS` | `RUN#<created_at>#<run_id>` | Chronological runs index | `Query(pk=RUNS, ScanIndexForward=false)` (O(k)) |
+| `Run Telemetry Events` | `RUN#<run_id>` | `EVENT#<timestamp>#<event_id>` | Trace events collection | `Query(pk=RUN#<id>, begins_with(sk, 'EVENT#'))` (O(k)) |
+| `Incident (Primary Rep 1)` | `INCIDENT#<incident_id>` | `METADATA` | Direct incident lookup | `GetItem(pk=INCIDENT#<id>, sk=METADATA)` (O(1)) |
+| `Incident (Global Rep 2)` | `INCIDENTS` | `INCIDENT#<created_at>#<id>` | Chronological incident index | `Query(pk=INCIDENTS, ScanIndexForward=false)` (O(k)) |
+| `Incident (Run Assoc Rep 3)` | `RUN#<run_id>` | `INCIDENT#<created_at>#<id>` | Run-associated incidents | `Query(pk=RUN#<run_id>, begins_with(sk, 'INCIDENT#'))` (O(k)) |
 
-### 3. Implemented API Endpoints
+#### Atomic Multi-Item Transactions:
+- **`createIncident`**: Uses `TransactWriteCommand` to commit all 3 representations simultaneously. If any representation fails, none are committed.
+- **`updateIncidentRca`**: Uses `TransactWriteCommand` to update all 3 representations with `rca`, `status`, and `updated_at` without losing existing fields.
+
+### 3. Implemented API Endpoints (Phase 3–6)
 
 - `GET /health` — Foundation health probe returning runtime status, region, and table name.
-- `POST /runs` — Validate and create agent run with generated `run_id`. Synchronizes both primary and timeline items.
+- `POST /runs` — Validate and create agent run with generated `run_id`. Atomically writes primary and timeline items.
 - `GET /runs?limit={n}` — List chronological agent runs (newest first) using `Query(pk=RUNS)` without table scan.
 - `GET /runs/{run_id}` — Point lookup of run by ID (returns status, metrics, and `events_count`).
 - `POST /runs/{run_id}/telemetry` — Ingest telemetry events, execution metrics, and update Run status across both items.
 - `GET /runs/{run_id}/telemetry` — Retrieve chronological telemetry events for a Run (oldest to newest).
-- `GET /incidents` — Query chronological incidents without table scan (returns empty collection if none).
+- `GET /incidents?limit={n}&run_id={id}` — List chronological incidents, optionally filtered by Run (zero scan).
+- `POST /incidents` — Validate and persist canonical incident into 3 representations atomically.
 - `GET /incidents/{incident_id}` — Point lookup of incident by ID.
+- `POST /incidents/{incident_id}/rca` — Persist structured RCA payload (Case A) or return HTTP 501 `RCA_SERVICE_NOT_INTEGRATED` on automated trigger (Case B).
+- `GET /runs/{run_id}/incidents` — Retrieve all incidents associated with a Run via `begins_with(sk, 'INCIDENT#')`.
 
 ---
 

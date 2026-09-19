@@ -9,25 +9,28 @@ import './App.css';
 
 type ActiveTab = 'overview' | 'runs' | 'incidents';
 
-function getInitialRoute(): { tab: ActiveTab; runId: string | null } {
+function getInitialRoute(): { tab: ActiveTab; runId: string | null; incidentId: string | null } {
   if (typeof window === 'undefined') {
-    return { tab: 'overview', runId: null };
+    return { tab: 'overview', runId: null, incidentId: null };
   }
   const hash = window.location.hash.replace(/^#\/?/, '');
   if (hash.startsWith('runs/')) {
-    return { tab: 'runs', runId: hash.slice('runs/'.length) };
+    return { tab: 'runs', runId: hash.slice('runs/'.length), incidentId: null };
   } else if (hash === 'runs') {
-    return { tab: 'runs', runId: null };
+    return { tab: 'runs', runId: null, incidentId: null };
+  } else if (hash.startsWith('incidents/')) {
+    return { tab: 'incidents', runId: null, incidentId: hash.slice('incidents/'.length) };
   } else if (hash === 'incidents') {
-    return { tab: 'incidents', runId: null };
+    return { tab: 'incidents', runId: null, incidentId: null };
   }
-  return { tab: 'overview', runId: null };
+  return { tab: 'overview', runId: null, incidentId: null };
 }
 
 export function App() {
   const initial = getInitialRoute();
   const [activeTab, setActiveTab] = useState<ActiveTab>(initial.tab);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(initial.runId);
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(initial.incidentId);
 
   // Backend Health State
   const [health, setHealth] = useState<HealthCheckResponse | null>(null);
@@ -52,6 +55,7 @@ export function App() {
     const route = getInitialRoute();
     setActiveTab(route.tab);
     setSelectedRunId(route.runId);
+    setSelectedIncidentId(route.incidentId);
   }, []);
 
   useEffect(() => {
@@ -63,11 +67,13 @@ export function App() {
   const navigateToTab = (tab: ActiveTab) => {
     setActiveTab(tab);
     setSelectedRunId(null);
+    setSelectedIncidentId(null);
     window.location.hash = tab === 'overview' ? '' : tab;
   };
 
   const navigateToRunDetail = (runId: string) => {
     setSelectedRunId(runId);
+    setSelectedIncidentId(null);
     setActiveTab('runs');
     window.location.hash = `runs/${runId}`;
   };
@@ -75,6 +81,18 @@ export function App() {
   const navigateBackToRuns = () => {
     setSelectedRunId(null);
     window.location.hash = 'runs';
+  };
+
+  const navigateToIncidentDetail = (incidentId: string) => {
+    setSelectedIncidentId(incidentId);
+    setSelectedRunId(null);
+    setActiveTab('incidents');
+    window.location.hash = `incidents/${incidentId}`;
+  };
+
+  const navigateBackToIncidents = () => {
+    setSelectedIncidentId(null);
+    window.location.hash = 'incidents';
   };
 
   return (
@@ -103,7 +121,7 @@ export function App() {
           {/* Navigation Tabs */}
           <nav className="nav-tabs" aria-label="Main Navigation">
             <button
-              className={`nav-tab ${activeTab === 'overview' && !selectedRunId ? 'active' : ''}`}
+              className={`nav-tab ${activeTab === 'overview' && !selectedRunId && !selectedIncidentId ? 'active' : ''}`}
               onClick={() => navigateToTab('overview')}
             >
               Overview
@@ -120,6 +138,7 @@ export function App() {
               onClick={() => navigateToTab('incidents')}
             >
               Incidents
+              {selectedIncidentId && <span className="nav-sub-indicator">/ Detail</span>}
             </button>
           </nav>
         </div>
@@ -150,6 +169,7 @@ export function App() {
         {activeTab === 'overview' && (
           <OverviewView
             onSelectRun={navigateToRunDetail}
+            onSelectIncident={navigateToIncidentDetail}
             onNavigateToRuns={() => navigateToTab('runs')}
             onNavigateToIncidents={() => navigateToTab('incidents')}
           />
@@ -160,11 +180,20 @@ export function App() {
         )}
 
         {activeTab === 'runs' && selectedRunId && (
-          <RunDetailView runId={selectedRunId} onBack={navigateBackToRuns} />
+          <RunDetailView
+            runId={selectedRunId}
+            onBack={navigateBackToRuns}
+            onSelectIncident={navigateToIncidentDetail}
+          />
         )}
 
         {activeTab === 'incidents' && (
-          <IncidentsView onSelectRun={navigateToRunDetail} />
+          <IncidentsView
+            selectedIncidentId={selectedIncidentId}
+            onSelectIncident={navigateToIncidentDetail}
+            onBack={navigateBackToIncidents}
+            onSelectRun={navigateToRunDetail}
+          />
         )}
       </main>
 

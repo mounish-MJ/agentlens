@@ -10,6 +10,8 @@ import type {
   Run,
   RunStatus,
   Incident,
+  IncidentStatus,
+  IncidentRcaResult,
   RegressionTest,
   Evaluation,
   ReplayRecord,
@@ -37,6 +39,15 @@ export interface IAgentLensRepository {
   createIncident(incident: Incident): Promise<Incident>;
   getIncident(incident_id: string): Promise<Incident | null>;
   listIncidents(limit?: number): Promise<Incident[]>;
+  listIncidentsByRun(run_id: string, limit?: number): Promise<Incident[]>;
+  updateIncidentRca(
+    incident_id: string,
+    updates: {
+      rca: IncidentRcaResult;
+      status?: IncidentStatus;
+      updated_at: string;
+    }
+  ): Promise<Incident | null>;
   createRegressionTest(test: RegressionTest): Promise<RegressionTest>;
   getRegressionTest(test_id: string): Promise<RegressionTest | null>;
   createEvaluation(evaluation: Evaluation): Promise<Evaluation>;
@@ -260,7 +271,7 @@ export class AgentLensRepository implements IAgentLensRepository {
   // ===================================================
 
   async createIncident(incident: Incident): Promise<Incident> {
-    // 1. Write direct lookup item: pk = INCIDENT#<id>, sk = METADATA
+    // 1. Direct point lookup: pk = INCIDENT#<id>, sk = METADATA
     const primaryItem = {
       pk: `INCIDENT#${incident.incident_id}`,
       sk: 'METADATA',
@@ -268,7 +279,7 @@ export class AgentLensRepository implements IAgentLensRepository {
       ...incident,
     };
 
-    // 2. Write collection index item: pk = INCIDENTS, sk = INCIDENT#<created_at>#<id>
+    // 2. Timeline index item: pk = INCIDENTS, sk = INCIDENT#<created_at>#<id>
     const collectionItem = {
       pk: 'INCIDENTS',
       sk: `INCIDENT#${incident.created_at}#${incident.incident_id}`,
@@ -276,17 +287,37 @@ export class AgentLensRepository implements IAgentLensRepository {
       ...incident,
     };
 
-    await this.docClient.send(
-      new PutCommand({
-        TableName: this.tableName,
-        Item: primaryItem,
-      })
-    );
+    // 3. Run-associated incident item: pk = RUN#<run_id>, sk = INCIDENT#<created_at>#<id>
+    const runItem = {
+      pk: `RUN#${incident.run_id}`,
+      sk: `INCIDENT#${incident.created_at}#${incident.incident_id}`,
+      entity_type: 'RUN_INCIDENT',
+      ...incident,
+    };
 
+    // Atomic transaction ensuring all three items are written together or neither is committed
     await this.docClient.send(
-      new PutCommand({
-        TableName: this.tableName,
-        Item: collectionItem,
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: primaryItem,
+            },
+          },
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: collectionItem,
+            },
+          },
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: runItem,
+            },
+          },
+        ],
       })
     );
 
@@ -325,7 +356,7 @@ export class AgentLensRepository implements IAgentLensRepository {
         ExpressionAttributeValues: {
           ':pk': 'INCIDENTS',
         },
-        ScanIndexForward: false, // newest incidents first
+        ScanIndexForward: false, // Newest incidents first
         Limit: limit,
       })
     );
@@ -342,6 +373,105 @@ export class AgentLensRepository implements IAgentLensRepository {
       };
       return incidentData as Incident;
     });
+  }
+
+  async listIncidentsByRun(run_id: string, limit = 50): Promise<Incident[]> {
+    const response = await this.docClient.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :skPrefix)',
+        ExpressionAttributeValues: {
+          ':pk': `RUN#${run_id}`,
+          ':skPrefix': 'INCIDENT#',
+        },
+        ScanIndexForward: false, // Newest incidents first
+        Limit: limit,
+      })
+    );
+
+    if (!response.Items || response.Items.length === 0) {
+      return [];
+    }
+
+    return response.Items.map((item) => {
+      const { pk, sk, entity_type, ...incidentData } = item as Incident & {
+        pk: string;
+        sk: string;
+        entity_type: string;
+      };
+      return incidentData as Incident;
+    });
+  }
+
+  async updateIncidentRca(
+    incident_id: string,
+    updates: {
+      rca: IncidentRcaResult;
+      status?: IncidentStatus;
+      updated_at: string;
+    }
+  ): Promise<Incident | null> {
+    // 1. Retrieve existing incident
+    const existing = await this.getIncident(incident_id);
+    if (!existing) {
+      return null;
+    }
+
+    const updatedIncident: Incident = {
+      ...existing,
+      rca: updates.rca,
+      status: updates.status || existing.status,
+      updated_at: updates.updated_at,
+    };
+
+    // 2. Atomically update all three representations
+    const primaryItem = {
+      pk: `INCIDENT#${updatedIncident.incident_id}`,
+      sk: 'METADATA',
+      entity_type: 'INCIDENT',
+      ...updatedIncident,
+    };
+
+    const collectionItem = {
+      pk: 'INCIDENTS',
+      sk: `INCIDENT#${updatedIncident.created_at}#${updatedIncident.incident_id}`,
+      entity_type: 'INCIDENT_INDEX',
+      ...updatedIncident,
+    };
+
+    const runItem = {
+      pk: `RUN#${updatedIncident.run_id}`,
+      sk: `INCIDENT#${updatedIncident.created_at}#${updatedIncident.incident_id}`,
+      entity_type: 'RUN_INCIDENT',
+      ...updatedIncident,
+    };
+
+    await this.docClient.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: primaryItem,
+            },
+          },
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: collectionItem,
+            },
+          },
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: runItem,
+            },
+          },
+        ],
+      })
+    );
+
+    return updatedIncident;
   }
 
   // ===================================================

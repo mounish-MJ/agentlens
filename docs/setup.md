@@ -65,24 +65,54 @@ npm run deploy:backend
 AWS_REGION=ap-southeast-2 ENVIRONMENT=dev bash infrastructure/deploy.sh
 ```
 
-### 3. Verify Deployed Application API (Phase 3)
+### 3. Verify Deployed Application API (Phase 3–6)
 ```bash
 # 1. Health Probe
 curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/health
 
-# 2. Create Run
+# 2. Create Run (writes primary and timeline items atomically)
 curl -i -X POST https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/runs \
   -H "Content-Type: application/json" \
   -d '{"agent_name": "demo-agent", "prompt": "Analyze security logs"}'
 
-# 3. Get Run by ID
-curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/runs/<run_id>
+# 3. Create Incident linked to Run (atomically creates 3 DynamoDB representations)
+curl -i -X POST https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "run_id": "<run_id>",
+    "title": "Tool loop failure",
+    "type": "tool_loop",
+    "severity": "high",
+    "detector_source": "tool_loop_detector",
+    "confidence": 0.96,
+    "evidence": [{"event_id": "evt_1", "type": "tool_call", "name": "search", "metric": "retries", "value": 4}]
+  }'
 
-# 4. List Incidents (returns empty array when none exist)
-curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents
+# 4. List Incidents (supports optional ?run_id=<run_id> filter)
+curl -i "https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents"
 
 # 5. Get Incident by ID
 curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents/<incident_id>
+
+# 6. List Incidents by Run (zero table scan)
+curl -i https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/runs/<run_id>/incidents
+
+# 7. Persist Structured RCA Payload (Case A)
+curl -i -X POST https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents/<incident_id>/rca \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rca": {
+      "primary_failure": "Search timeout",
+      "root_cause": "Rate limit exceeded on external API",
+      "analyzed_at": "2026-09-19T04:00:00.000Z"
+    },
+    "status": "resolved"
+  }'
+
+# 8. Test Automated RCA Request Boundary (Case B -> HTTP 501 RCA_SERVICE_NOT_INTEGRATED)
+curl -i -X POST https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/incidents/<incident_id>/rca \
+  -H "Content-Type: application/json" \
+  -d '{"trigger_automated_rca": true}'
 ```
 
 ---

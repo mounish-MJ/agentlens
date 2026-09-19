@@ -8,7 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "tsx --test tests/handler.test.ts tests/api.test.ts tests/telemetry.test.ts"
+    "test": "tsx --test tests/handler.test.ts tests/api.test.ts tests/telemetry.test.ts tests/incident.test.ts"
   },
   "keywords": [
     "agentlens",

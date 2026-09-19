@@ -1,15 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Run, TelemetryEvent } from '../types/contracts.js';
+import type { Run, TelemetryEvent, Incident } from '../types/contracts.js';
 import { apiClient, ApiClientError } from '../api/client.js';
 
 interface RunDetailViewProps {
   runId: string;
   onBack: () => void;
+  onSelectIncident?: (incident_id: string) => void;
 }
 
-export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
+export function RunDetailView({ runId, onBack, onSelectIncident }: RunDetailViewProps) {
   const [run, setRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<TelemetryEvent[]>([]);
+  const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState<boolean>(false);
@@ -22,12 +24,14 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
 
   const fetchRunAndTelemetry = useCallback(async () => {
     try {
-      const [runData, telemetryData] = await Promise.all([
+      const [runData, telemetryData, incidentsData] = await Promise.all([
         apiClient.getRun(runId),
         apiClient.getRunTelemetry(runId),
+        apiClient.getIncidentsByRun(runId).catch(() => []),
       ]);
       setRun(runData);
       setEvents(telemetryData);
+      setIncidents(incidentsData);
       setError(null);
       setNotFound(false);
     } catch (err: unknown) {
@@ -270,6 +274,64 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
           <div className="stat-value accent-purple">{events.length}</div>
           <div className="stat-subtext">Persisted in event item collection</div>
         </div>
+      </div>
+
+      {/* Associated Incidents Section */}
+      <div className="card incidents-panel" style={{ marginBottom: '1.5rem' }}>
+        <div className="panel-header">
+          <div>
+            <h3 className="card-title">Associated Incidents</h3>
+            <p className="card-subtitle">
+              Reliability incidents and detector findings linked to this Run execution
+            </p>
+          </div>
+          <span className="badge-count">{incidents.length} incidents</span>
+        </div>
+
+        {incidents.length === 0 ? (
+          <div className="empty-state" style={{ padding: '1.5rem 1rem' }}>
+            <div className="empty-icon">🛡️</div>
+            <h4>No Incidents Recorded for this Execution</h4>
+            <p className="text-muted text-sm">
+              All detectors evaluated or execution traces have no recorded reliability incidents.
+            </p>
+          </div>
+        ) : (
+          <div className="associated-incidents-list">
+            {incidents.map((inc) => (
+              <div key={inc.incident_id} className="associated-incident-card">
+                <div className="associated-incident-main">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                    <span className={`severity-badge severity-${inc.severity}`}>
+                      {inc.severity.toUpperCase()}
+                    </span>
+                    <span className={`status-badge status-${inc.status}`}>
+                      {inc.status}
+                    </span>
+                    <span className="text-muted text-xs font-mono">{inc.incident_id}</span>
+                  </div>
+                  <h4 className="associated-incident-title">{inc.title}</h4>
+                  <div className="text-muted text-xs">
+                    Type: <span className="font-mono text-accent">{inc.type}</span>
+                    {inc.detector_source && (
+                      <span style={{ marginLeft: '0.75rem' }}>
+                        Detector: <span className="font-mono text-cyan">{inc.detector_source}</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {onSelectIncident && (
+                  <button
+                    className="btn-secondary btn-small"
+                    onClick={() => onSelectIncident(inc.incident_id)}
+                  >
+                    View Incident →
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Telemetry Timeline */}

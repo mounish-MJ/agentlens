@@ -4,6 +4,7 @@ import { apiClient, ApiClientError } from '../api/client.js';
 
 interface OverviewViewProps {
   onSelectRun: (run_id: string) => void;
+  onSelectIncident?: (incident_id: string) => void;
   onNavigateToRuns: () => void;
   onNavigateToIncidents: () => void;
   onRunCreated?: () => void;
@@ -11,6 +12,7 @@ interface OverviewViewProps {
 
 export function OverviewView({
   onSelectRun,
+  onSelectIncident,
   onNavigateToRuns,
   onNavigateToIncidents,
   onRunCreated,
@@ -237,7 +239,13 @@ export function OverviewView({
           ) : (
             <div className="incidents-list">
               {incidents.slice(0, 5).map((inc) => (
-                <div key={inc.incident_id} className="incident-row">
+                <div
+                  key={inc.incident_id}
+                  className={`incident-row ${onSelectIncident ? 'clickable-row' : ''}`}
+                  onClick={() => onSelectIncident?.(inc.incident_id)}
+                  role={onSelectIncident ? 'button' : undefined}
+                  tabIndex={onSelectIncident ? 0 : undefined}
+                >
                   <div className={`severity-indicator severity-${inc.severity}`} />
                   <div className="incident-info">
                     <div className="incident-title">{inc.title}</div>
